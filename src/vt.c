@@ -1,0 +1,632 @@
+// http://vt100.net/emu/dec_ansi_parser
+#include <vt.h>
+#include <font.h>
+
+
+struct output *outputs[] = { &drm_output };
+
+
+#define STATE(sa) (sa >> 4)
+#define ACTION(sa) (sa & 15)
+#define STATEACTION(s, a) ((s << 4) | a)
+#define SETDEFAULT(a, b) (a) = (a) ? (a) : (b)
+
+
+static int TAB_WIDTH = 4;
+
+
+typedef enum {
+  VTPST_ANYWHERE = 0,
+  VTPST_GROUND,
+
+  VTPST_ESC,
+  VTPST_ESC_INTERMEDIATE,
+
+  VTPST_CSI_ENTRY,
+  VTPST_CSI_PARAM,
+  VTPST_CSI_INTERMEDIATE,
+  VTPST_CSI_IGNORE,
+
+  VTPST_DCS_ENTRY,
+  VTPST_DCS_PARAM,
+  VTPST_DCS_INTERMEDIATE,
+  VTPST_DCS_PASSTHROUGH,
+  VTPST_DCS_IGNORE,
+
+  VTPST_OSC_STRING,
+  VTPST_SOS_STRING,
+} vtpst_t;
+
+
+static char *vtpst_tb[] = {
+  "VTPST_ANYWHERE",
+  "VTPST_GROUND",
+  "VTPST_ESC",
+  "VTPST_ESC_INTERMEDIATE",
+  "VTPST_CSI_ENTRY",
+  "VTPST_CSI_PARAM",
+  "VTPST_CSI_INTERMEDIATE",
+  "VTPST_CSI_IGNORE",
+  "VTPST_DCS_ENTRY",
+  "VTPST_DCS_PARAM",
+  "VTPST_DCS_INTERMEDIATE",
+  "VTPST_DCS_PASSTHROUGH",
+  "VTPST_DCS_IGNORE",
+  "VTPST_OSC_STRING",
+  "VTPST_SOS_STRING",
+};
+
+
+typedef enum {
+  VTPAC_CLEAR = 1,
+  VTPAC_COLLECT,
+  VTPAC_CSI_DISPATCH,
+  VTPAC_ESC_DISPATCH,
+  VTPAC_EXECUTE,
+  VTPAC_HOOK,
+  VTPAC_IGNORE,
+  VTPAC_OSC_END,
+  VTPAC_OSC_PUT,
+  VTPAC_OSC_START,
+  VTPAC_PARAM,
+  VTPAC_PRINT,
+  VTPAC_PUT,
+  VTPAC_UNHOOK,
+} vtpac_t;
+
+
+static char *vtpac_tb[] = {
+  "VTPAC_INVALID",
+  "VTPAC_CLEAR",
+  "VTPAC_COLLECT",
+  "VTPAC_CSI_DISPATCH",
+  "VTPAC_ESC_DISPATCH",
+  "VTPAC_EXECUTE",
+  "VTPAC_HOOK",
+  "VTPAC_IGNORE",
+  "VTPAC_OSC_END",
+  "VTPAC_OSC_PUT",
+  "VTPAC_OSC_START",
+  "VTPAC_PARAM",
+  "VTPAC_PRINT",
+  "VTPAC_PUT",
+  "VTPAC_UNHOOK",
+};
+
+
+typedef int (*vtpac_handler_t) (struct vt *vt, struct text *t, vtpac_t action);
+
+/*
+ * vt parser action handlers
+ */
+static int vtpac_handle_print(struct vt *vt, struct text *t, vtpac_t action) {
+  t->fg = vt->fg; t->bg = vt->bg; t->attrs = vt->attrs;
+  vt->output->drawText(vt->output, t, -1, -1);
+  return 1;
+}
+static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
+  rune c = t->code;
+  switch (c) {
+    case '\b':  // 0x08
+      if (vt->c.x) vt->c.x--;
+      return 0;
+    case '\t':  // 0x09
+      vt->c.x = ((vt->c.x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
+      if (vt->c.x >= vt->cols) vt->c.x = vt->cols - 1;
+      break;
+    case '\n':  // 0x0a
+      vt->c.x = 0;
+      vt->c.y++;
+      break;
+    case '\v':  // 0x0b
+    case '\f':  // 0x0c
+      vt->c.y++;
+      break;
+    case '\r':  // 0x0d
+      vt->c.x = 0;
+      break;
+    case ' ':
+      vt->c.x++;
+      break;
+    default:
+      return 0;
+  }
+  vt->output->updateCursor(vt->output);
+  return 1;
+}
+static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
+  rune c = t->code;
+
+  switch (vt->intermediate_chars[0]) {
+  case '(':
+    if (!vt->collect_ignored) {
+      t->code = CHARSETS[vt->intermediate_chars[0]][c];
+      if (!t->code) t->code = c;
+    }
+    break;
+  }
+
+  switch (c) {
+  case 'c':
+    vt->output->clear(vt->output, 0, 0, -1, -1);
+    vt->c.x = 0; vt->c.y = 0;
+    break;
+  case 'D':
+    vt->c.y++; break;
+  case 'E':
+    vt->c.x = 0; vt->c.y++;
+    break;
+  case 'M':
+    vt->c.y--; break;
+  case '#':
+    t->code = 'E';
+    uint32_t cx = vt->c.x, cy = vt->c.y;
+    for (int c = 0; c < vt->cols; c++)
+      for (int r = 0; r < vt->rows; r++)
+        vt->output->drawText(vt->output, t, c, r);
+    vt->c.x = cx; vt->c.y = cy;
+    break;
+  default: return 0;
+  }
+  vt->output->updateCursor(vt->output);
+  return 0;
+}
+static void sgr_handler(struct vt *vt, int param) {
+  uint32_t colortb[] = {
+    rgb(0 ,0, 0), rgb(255, 0, 0), rgb(0, 255, 0), rgb(255, 255, 0),
+    rgb(0, 0, 255), rgb(255, 0, 255), rgb(0, 255, 255), rgb(255, 255, 255),
+  };
+  switch (param) {
+  case 0:
+    vt->attrs &= ~(ATTR_BOLD | ATTR_UNDERLINE | ATTR_REVERSE);
+    vt->fg = options.fg;
+    vt->bg = options.bg;
+    break;
+  case 1: vt->attrs |= ATTR_BOLD; break;
+  case 4: vt->attrs |= ATTR_UNDERLINE; break;
+  case 7: vt->attrs |= ATTR_REVERSE; break;
+  case 22: vt->attrs &= ~ATTR_BOLD; break;
+  case 24: vt->attrs &= ~ATTR_UNDERLINE; break;
+  case 27: vt->attrs &= ~ATTR_REVERSE; break;
+  case 38:
+    vt->attrs |= ATTR_UNDERLINE;
+    vt->fg = options.fg;
+    break;
+  case 39:
+    vt->attrs &= ~ATTR_UNDERLINE;
+    vt->fg = options.fg;
+    // printf("+++++: %d\n", param, options.fg);
+    break;
+  case 49:
+    vt->bg = options.bg;
+    break;
+  default:
+    if (param >= 30 && param <= 37)
+      vt->fg = colortb[param - 30];
+    else if (param >= 40 && param <= 47)
+      vt->bg = colortb[param - 40];
+  }
+  printf("vt: %x %x %x %d\n", vt->fg, vt->bg, vt->attrs, param);
+}
+static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
+  rune c = t->code;
+  switch (c) {
+    case 'A': { // CUU
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.y -= vt->params[0];
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'B': { // CUD
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.y += vt->params[0];
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'C': { // CUF
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.x += vt->params[0];
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'D': { // CUB
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.x -= vt->params[0];
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'E': { // CNL
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.y += vt->params[0];
+      vt->c.x = 0;
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'F': { // CPL
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.y -= vt->params[0];
+      vt->c.x = 0;
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'G': { // CHA
+      SETDEFAULT(vt->params[0], 0);
+      vt->c.x = vt->params[0];
+      vt->output->updateCursor(vt->output);
+      break;
+    }
+    case 'H': { // CUP
+      SETDEFAULT(vt->params[0], 1);
+      SETDEFAULT(vt->params[1], 1);
+      vt->c.y = vt->params[0] - 1;
+      vt->c.x = vt->params[1] - 1;
+      vt->output->updateCursor(vt->output);
+    }
+    case 'J': { // ED
+      SETDEFAULT(vt->params[0], 1);
+      switch (vt->params[0]) {
+        case 1:
+          vt->output->clear(vt->output, 0, 0, vt->c.y, vt->c.x); break;
+        case 2:
+          vt->output->clear(vt->output, 0, 0, -1, -1); break;
+      }
+    }
+    case 'K': { // EL
+      SETDEFAULT(vt->params[0], 1);
+      switch (vt->params[0]) {
+        case 1:
+          vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, vt->c.x); break;
+        case 2:
+          vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, -1); break;
+      }
+    }
+    case 'd': { // VPA
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.y = vt->params[0] - 1;
+      vt->output->updateCursor(vt->output);
+    }
+    case '`':  {  // HPA
+      SETDEFAULT(vt->params[0], 1);
+      vt->c.x = vt->params[0] - 1;
+      vt->output->updateCursor(vt->output);
+    }
+    case 'f': { // HVP
+      SETDEFAULT(vt->params[0], 1);
+      SETDEFAULT(vt->params[1], 1);
+      vt->c.y = vt->params[0] - 1;
+      vt->c.x = vt->params[1] - 1;
+      vt->output->updateCursor(vt->output);
+    }
+    case 'm': {  // SGR
+      for (int i = 0; i < vt->param_num; i++)
+        sgr_handler(vt, vt->params[i]);
+      // printf("SGR: fg: %x, bg: %x, params: %d %d %d %d\n", vt->fg, vt->bg, vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
+    }
+  }
+  return 1;
+}
+
+
+static vtpac_handler_t vtpac_handlers[16] = {
+  [VTPAC_PRINT] = vtpac_handle_print,
+  [VTPAC_EXECUTE] = vtpac_handle_execute,
+  [VTPAC_CSI_DISPATCH] = vtpac_handle_csi_dispatch,
+  [VTPAC_ESC_DISPATCH] = vtpac_handle_esc_dispatch,
+};
+
+static uint8_t action_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
+  rune c = t->code;
+  switch(action) {
+    case VTPAC_PRINT:
+    case VTPAC_EXECUTE:
+    case VTPAC_HOOK:
+    case VTPAC_PUT:
+    case VTPAC_OSC_START:
+    case VTPAC_OSC_PUT:
+    case VTPAC_OSC_END:
+    case VTPAC_UNHOOK:
+    case VTPAC_CSI_DISPATCH:
+    case VTPAC_ESC_DISPATCH:
+      if (vtpac_handlers[action]) {
+        return vtpac_handlers[action](vt, t, action);
+      }
+      break;
+
+    case VTPAC_IGNORE:
+        /* do nothing */
+        break;
+
+    case VTPAC_COLLECT:
+      if(vt->intermediate_char_num + 1 >= 3)
+          vt->collect_ignored = 1;
+      else
+          vt->intermediate_chars[vt->intermediate_char_num++] = t->code;
+      break;
+
+    case VTPAC_PARAM: {
+      if (vt->param_num >= 16) break;
+
+      /* process the param character */
+      if(c == ';' || vt->param_num == 0)
+        vt->params[vt->param_num++] = 0;
+
+      if (c == ';') break;
+
+      /* the character is a digit */
+      int cpi = vt->param_num - 1;
+      vt->params[cpi] *= 10;
+      vt->params[cpi] += (c - '0');
+      printf("vt_param: %d\n", vt->params[cpi]);
+      break;
+    }
+
+    case VTPAC_CLEAR:
+      vt->intermediate_chars[0] = '\0';
+      vt->param_num             = 0;
+      vt->collect_ignored       = 0;
+      break;
+  }
+  return 0;
+}
+static uint8_t state_dispatch(struct vt *vt, struct text *t, vtpst_t state) {
+  uint8_t ns = state, na = 0;
+  rune c = t->code;
+  if (c >= 0xa0 && c <= 0xff) c -= 0x80;
+  switch (state) {
+  case VTPST_ANYWHERE:
+    if (c == 0x18 || c == 0x1a || (c >= 0x80 && c <= 0x8f) || (c >= 0x91 && c <= 0x97) || c == 0x99 || c == 0x9a) {
+      ns = VTPST_GROUND;
+      na = VTPAC_EXECUTE;
+    } else if (c == 0x9c) {
+      ns = VTPST_GROUND;
+    } else if (c == 0x98 || c == 0x9e || c == 0x9f) {
+      ns = VTPST_SOS_STRING;
+    } else if (c == 0x1b) {
+      ns = VTPST_ESC;
+    } else if (c == 0x90) {
+      ns = VTPST_DCS_ENTRY;
+    } else if (c == 0x9d) {
+      ns = VTPST_OSC_STRING;
+    } else if (c == 0x9b) {
+      ns = VTPST_CSI_ENTRY;
+    }
+    break;
+
+  case VTPST_GROUND:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <= 0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else {
+      na = VTPAC_PRINT;
+    }
+    break;
+
+  case VTPST_SOS_STRING:
+label_sos_string:
+    if (c == 0x9c) {
+      ns = VTPST_GROUND;
+    } else if (c != 0x18 && c != 0x1a && c != 0x1b) {
+      na = VTPAC_IGNORE;
+    }
+    break;
+
+  case VTPST_ESC:
+    switch (c) {
+    case 0x58:
+    case 0x5e:
+    case 0x5f:
+      ns = VTPST_SOS_STRING; break;
+    case 0x50:
+      ns = VTPST_DCS_ENTRY; break;
+    case 0x5d:
+      ns = VTPST_OSC_STRING; break;
+    case 0x5b:
+      ns = VTPST_CSI_ENTRY; break;
+    default:
+      if (c >= 0x20 && c <= 0x2f) {
+        ns = VTPST_ESC_INTERMEDIATE;
+        na = VTPAC_COLLECT;
+      } else {
+        ns = VTPST_GROUND;
+        na = VTPAC_ESC_DISPATCH;
+      }
+      break;
+    }
+    break;
+  case VTPST_ESC_INTERMEDIATE:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <=0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      na = VTPAC_COLLECT;
+    } else if ((c >= 0x30 && c <= 0x7e)) {
+      ns = VTPST_GROUND;
+      na = VTPAC_ESC_DISPATCH;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    }
+    break;
+
+  case VTPST_DCS_ENTRY:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <=0x1f) || c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      ns = VTPST_DCS_INTERMEDIATE;
+      na = VTPAC_COLLECT;
+    } else if (c == 0x3a) {
+      ns = VTPST_DCS_IGNORE;
+    } else if ((c >= 0x30 && c <= 0x39) || c == 0x3b) {
+      ns = VTPST_DCS_PARAM;
+      na = VTPAC_PARAM;
+    } else if (c >= 0x3c && c <= 0x3f) {
+      ns = VTPST_DCS_PARAM;
+      na = VTPAC_COLLECT;
+    } else if (c >= 0x40) {
+      ns = VTPST_DCS_PASSTHROUGH;
+    }
+    break;
+  case VTPST_DCS_INTERMEDIATE:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <=0x1f)) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      na = VTPAC_COLLECT;
+    } else if (c >= 0x30 && c <= 0x3f) {
+      ns = VTPST_DCS_IGNORE;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x40) {
+      ns = VTPST_DCS_PASSTHROUGH;
+    }
+    break;
+  case VTPST_DCS_IGNORE:
+    goto label_sos_string;
+  case VTPST_DCS_PARAM:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <=0x1f)) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      ns = VTPST_DCS_INTERMEDIATE;
+      na = VTPAC_COLLECT;
+    } else if ((c >= 0x30 && c <= 0x39) || c == 0x3b) {
+      na = VTPAC_PARAM;
+    } else if (c == 0x3a || (c >= 0x3c && c <= 0x3f)) {
+      ns = VTPST_DCS_IGNORE;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x40) {
+      ns = VTPST_DCS_PASSTHROUGH;
+    }
+    break;
+  case VTPST_DCS_PASSTHROUGH:
+    if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c == 0x9c) {
+      ns = VTPST_GROUND;
+    } else if (c != 0x18 && c != 0x1a && c != 0x1b) {
+      na = VTPAC_PUT;
+    }
+    break;
+
+  case VTPST_CSI_ENTRY:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <=0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      ns = VTPST_CSI_INTERMEDIATE;
+      na = VTPAC_COLLECT;
+    } else if (c == 0x3a) {
+      ns = VTPST_CSI_IGNORE;
+    } else if ((c >= 0x30 && c <= 0x39) || c == 0x3b) {
+      ns = VTPST_CSI_PARAM;
+      na = VTPAC_PARAM;
+    } else if (c >= 0x3c && c <= 0x3f) {
+      ns = VTPST_CSI_PARAM;
+      na = VTPAC_COLLECT;
+    } else if (c >= 0x40) {
+      ns = VTPST_GROUND;
+      na = VTPAC_CSI_DISPATCH;
+    }
+    break;
+  case VTPST_CSI_INTERMEDIATE:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <= 0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      na = VTPAC_COLLECT;
+    } else if (c >= 0x30 && c <= 0x3f) {
+      ns = VTPST_CSI_IGNORE;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x40) {
+      ns = VTPST_GROUND;
+      na = VTPAC_CSI_DISPATCH;
+    }
+    break;
+  case VTPST_CSI_IGNORE:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <= 0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else if ((c >= 0x20 && c <= 0x3f) || c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x40) {
+      ns = VTPST_GROUND;
+    }
+    break;
+  case VTPST_CSI_PARAM:
+    if ((c <= 0x17) || c == 0x19 || (c >= 0x1c && c <= 0x1f)) {
+      na = VTPAC_EXECUTE;
+    } else if (c >= 0x20 && c <= 0x2f) {
+      ns = VTPST_CSI_INTERMEDIATE;
+      na = VTPAC_COLLECT;
+    } else if ((c >= 0x30 && c <= 0x39) || c == 0x3b) {
+      na = VTPAC_PARAM;
+    } else if (c == 0x3a || (c >= 0x3c && c <= 0x3f)) {
+      ns = VTPST_CSI_IGNORE;
+    } else if (c == 0x7f) {
+      na = VTPAC_IGNORE;
+    } else if (c >= 0x40) {
+      ns = VTPST_GROUND;
+      na = VTPAC_CSI_DISPATCH;
+    }
+    break;
+
+  default: break;
+  }
+  return STATEACTION(ns, na);
+}
+static int vt_parse_c(struct vt *vt, struct text *t) {
+  int result = 0; uint8_t sa = 0, state = 0, action = 0;
+
+  sa = state_dispatch(vt, t, VTPST_ANYWHERE);
+  if (!sa) sa = state_dispatch(vt, t, vt->state);
+  state = STATE(sa); action = ACTION(sa);
+
+  printf("vtp:%c:%x %s %s\n", t->code, t->code, vtpac_tb[action], vtpst_tb[state]);
+
+  if (!state)
+    return action_dispatch(vt, t, action);
+
+  // exec exit action
+  if (vt->state & VTPST_DCS_PASSTHROUGH) {
+    action_dispatch(vt, t, VTPAC_UNHOOK);
+  } else if (vt->state & VTPST_OSC_STRING) {
+    action_dispatch(vt, t, VTPAC_OSC_END);
+  }
+
+  // exec action
+  result = action_dispatch(vt, t, action);
+
+  // exec entry action
+  switch (state) {
+    case VTPST_CSI_ENTRY:
+    case VTPST_DCS_ENTRY:
+    case VTPST_ESC:
+      action_dispatch(vt, t, VTPAC_CLEAR); break;
+    case VTPST_DCS_PASSTHROUGH:
+      action_dispatch(vt, t, VTPAC_HOOK); break;
+    case VTPST_OSC_STRING:
+      action_dispatch(vt, t, VTPAC_OSC_START); break;
+  }
+
+  vt->state = state;
+  return result;
+}
+int vt_parse_fp(struct vt *vt, int inputfp, struct text *t) {
+  t->fg = options.fg; t->bg = options.bg;
+  if ((t->code = u_getc(inputfp))) {
+    vt_parse_c(vt, t); return 1;
+  }
+  return 0;
+}
+
+
+void vt_init(struct vt *vt, int backend) {
+  vt->parseInput = vt_parse_fp;
+  vt->output = outputs[backend];
+  vt->output->init(vt->output, &vt->c);
+
+  vt->state = VTPST_GROUND;
+  vt->fg = options.fg;
+  vt->bg = options.bg;
+}
+
+
+void vt_destroy(struct vt *vt) {
+  vt->output->destroy(vt->output);
+}
