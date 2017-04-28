@@ -22,7 +22,6 @@ void font_init() {
               1,
               &options.face);
   FT_Set_Pixel_Sizes(options.face, options.font_height, options.font_height);
-  // FT_Set_Char_Size(options.face, options.font_size * 64, 0, 72, 72);
 
   FcPatternDestroy(pattern);
   FcPatternDestroy(founded);
@@ -35,53 +34,42 @@ void font_destroy() {
 }
 
 
-rune u_rune(char *s) {
-  rune u = 0;
-  uint8_t t = 0, c = 0, mask[3] = { 192, 224, 240 };
+rune u_rune(char *s, int size) {
+  if (size <= 1) return s[0];
 
-  t = (uint8_t)s[0];
+  uint8_t t = 0, mask[3] = { 192, 224, 240 };
+  rune u = (uint8_t)s[0] & ~mask[size - 2];
 
-  u = t;
-
-  if ((t & mask[0]) == mask[0]) c++, u = t & (~mask[0]);
-  if ((t & mask[1]) == mask[1]) c++, u = t & (~mask[1]);
-  if ((t & mask[2]) == mask[2]) c++, u = t & (~mask[2]);
-
-  if (c == 0) return u;
-
-  for (uint8_t i = 0; i < c; i++) {
-    t = (uint8_t)s[1+i];
+  for (uint8_t i = 0; i < size - 1; i++) {
+    t = (uint8_t)s[1 + i];
     u = (u << 6) + (t & 0x7f);
   }
+  // printf("u_rune: %x %x %x %x - %x\n", s[0], s[1], s[2], s[3], u);
   return u;
 }
 
 
-rune u_getc(int fp) {
-  rune u = 0;
-  uint8_t t = 0, c = 0, mask[3] = { 192, 224, 240 };
+int u_getc(int fp, char *buf) {
+  uint8_t c = 0, mask[3] = { 192, 224, 240 };
 
-  if (read(fp, &t, 1) == EOF) return EOF;
+  if (read(fp, buf, 1) == EOF) return EOF;
 
-  u = t;
+  if ((buf[0] & mask[0]) == mask[0]) c++;
+  if ((buf[0] & mask[1]) == mask[1]) c++;
+  if ((buf[0] & mask[2]) == mask[2]) c++;
 
-  if ((t & mask[0]) == mask[0]) c++, u = t & (~mask[0]);
-  if ((t & mask[1]) == mask[1]) c++, u = t & (~mask[1]);
-  if ((t & mask[2]) == mask[2]) c++, u = t & (~mask[2]);
+  // printf("u_getc: %x %x %x\r\n", buf[0], buf[1], c);
+  if (c == 0) return c + 1;
 
-  if (c == 0) return u;
-
-  for (uint8_t i = 0; i < c; i++) {
-    read(fp, &t, 1);
-    u = (u << 6) + (t & 0x7f);
-  }
-  return u;
+  // for (uint8_t i = 0; i < c; i++) {
+  read(fp, buf + 1, c);
+  // }
+  // printf("u_getc-2: %x %x - %d\r\n", buf[0], buf[1], c);
+  return c + 1;
 }
 
 
-int u_render(struct text *t, uint32_t *buffer, uint32_t *bw, uint32_t *bh) {
-  // int e = 0;
-
+int u_render(struct text *t, uint32_t *buffer, int32_t by, int32_t bx, int32_t buffer_width) {
   FT_Select_Charmap(options.face, FT_ENCODING_UNICODE);
   rune c = FT_Get_Char_Index(options.face, t->code);
   FT_Load_Glyph(options.face, c, FT_LOAD_TARGET_NORMAL);
@@ -90,19 +78,25 @@ int u_render(struct text *t, uint32_t *buffer, uint32_t *bw, uint32_t *bh) {
   FT_GlyphSlot slot = options.face->glyph;
   FT_Bitmap *bitmap = &(slot->bitmap);
 
-  uint32_t w = t->code > 0x7f ? options.font_height : options.font_width;
-  uint32_t h = options.font_height;
+  int32_t w = t->code > 0x7f ? options.font_height : options.font_width;
+  int32_t h = options.font_height;
+
+  if (buffer_width < 0) buffer_width = options.output->w;
 
   uint32_t tfg = t->fg, tbg = t->bg;
-  if (t->attrs & ATTR_BOLD)
-    tfg |= 0xff000000, tbg &= 0xff000000;
+
+  if (t->attrs & ATTR_BOLD) tfg += 8;
+  tfg = colortb[tfg], tbg = colortb[tbg];
+  if (t->attrs & ATTR_REVERSE) tfg = ~tfg, tbg = ~tbg;
 
   int32_t x = 0,
           y = options.font_height - options.font_height / 5 - 1;  // origin
           //  y = (y < slot->bitmap_top) ? slot->bitmap_top : y;
   int32_t sx= (slot->bitmap_left < 0 ? -slot->bitmap_left : 0), sy = y - slot->bitmap_top, // (y < slot->bitmap_top ? 0 : y - slot->bitmap_top),
-           ex= sx + bitmap->width, ey = sy + bitmap->rows;
+          ex= sx + bitmap->width, ey = sy + bitmap->rows;
+
   // printf("---:%c %d %d %d %d - %d %d - %d - %d %d\n",t->code, sx, ex, sy, ey, bitmap->width, bitmap->rows, slot->bitmap_top, x, y);
+
   for (int r = 0; r < h; r++)
     for (int c = 0; c < w; c++) {
       // ATTENTION: In fact, we did not specify `FT_LOAD_COLOR`, so bitmap is accually a
@@ -112,18 +106,19 @@ int u_render(struct text *t, uint32_t *buffer, uint32_t *bw, uint32_t *bh) {
       //     2. the buffer is 32-bit size pixel use format argb, which layout on memory is: [b][g][r][a]
       // So we just cast 8-bit bitmap cell data to 32-bit buffer cell data, which makes it blue!!!
       // buffer[r * bitmap->width + c] = (bitmap->buffer[r * bitmap->width + c]);
-      uint32_t fg = tfg, bg = tbg;
+      uint32_t fg = tfg, bg = tbg, index = (by + r) * buffer_width + c + bx;
 
-      if (r < sy || r >= ey) {
-        buffer[r * w + c] = bg;
-      } else if (c < sx || c >= ex) {
-        buffer[r * w + c] = bg;
-      } else {
+      buffer[index] = bg;
+
+      if (!(r < sy || r >= ey || c < sx || c >= ex)) {
+        // buffer[(by + r) * buffer_width + c + bx] = bg;
+      // } else {
         uint8_t g = bitmap->buffer[(r - sy) * bitmap->width + c - sx];
-
-        if (!g) {
-          buffer[r * w + c] = bg; continue;
-        }
+        if (!g) continue;
+        // if (!g) {
+          // buffer[(by + r) * buffer_width + c + bx] = bg;
+          // continue;
+        // }
 
         float raito = g / 255.0;
         uint8_t *colors = (uint8_t*)&fg;
@@ -132,16 +127,16 @@ int u_render(struct text *t, uint32_t *buffer, uint32_t *bw, uint32_t *bh) {
         colors[1] = (uint8_t)(colors[1] * raito);
         colors[2] = (uint8_t)(colors[2] * raito);
 
-        buffer[r * w + c] = fg;
+        buffer[index] = fg;
       }
     }
 
-  if (t->attrs & ATTR_UNDERLINE)
+  if (t->attrs & ATTR_UNDERLINE) {
     for (int c = 0; c < w; c++)
-      buffer[(h - 1) * w + c] = tfg;
+      buffer[(by + h - 2) * buffer_width + c + bx] = tfg;
+  }
+  // if (bw) *bw = w; // bitmap->width;
+  // if (bh) *bh = h; // bitmap->rows;
 
-  if (bw) *bw = w; // bitmap->width;
-  if (bh) *bh = h; // bitmap->rows;
-
-  return 0;
+  return w / options.font_width;
 }

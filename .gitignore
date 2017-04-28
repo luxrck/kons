@@ -1,3 +1,4 @@
 .dev
 *.o
 *.gch
+kons*

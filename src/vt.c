@@ -1,9 +1,14 @@
 // http://vt100.net/emu/dec_ansi_parser
+#include <poll.h>
+#include <termios.h>
+#include <errno.h>
+#include <unistd.h>
+#include <fcntl.h>
+
+#include <sys/ioctl.h>
+
 #include <vt.h>
 #include <font.h>
-
-
-struct output *outputs[] = { &drm_output };
 
 
 #define STATE(sa) (sa >> 4)
@@ -108,13 +113,18 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
   rune c = t->code;
   switch (c) {
     case '\b':  // 0x08
-      if (vt->c.x) vt->c.x--;
-      return 0;
+      if (vt->c.x) {
+        vt->c.x--;
+        vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, vt->c.x);
+      }
+      break;
     case '\t':  // 0x09
       vt->c.x = ((vt->c.x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
       if (vt->c.x >= vt->cols) vt->c.x = vt->cols - 1;
       break;
+    // case '\r':
     case '\n':  // 0x0a
+      // printf("vtpac_handle_execute: %x\n", c);
       vt->c.x = 0;
       vt->c.y++;
       break;
@@ -144,6 +154,20 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       if (!t->code) t->code = c;
     }
     break;
+  case '#':
+    switch (c) {
+    case '8': {
+      struct text tt = { .code = 'E', .fg = 7, .bg = 0, .attrs = 0 };
+      int32_t cx = vt->c.x, cy = vt->c.y;
+      vt->c.x = vt->c.y = 0;
+      for (int y = 0; y < vt->output->rows; y++)
+        for (int x = 0; x < vt->output->cols; x++)
+          vt->output->drawText(vt->output, &tt, -1, -1);
+      vt->c.x = cx; vt->c.y = cy;
+      break;
+      }
+    }
+    break;
   }
 
   switch (c) {
@@ -158,29 +182,18 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
     break;
   case 'M':
     vt->c.y--; break;
-  case '#':
-    t->code = 'E';
-    uint32_t cx = vt->c.x, cy = vt->c.y;
-    for (int c = 0; c < vt->cols; c++)
-      for (int r = 0; r < vt->rows; r++)
-        vt->output->drawText(vt->output, t, c, r);
-    vt->c.x = cx; vt->c.y = cy;
-    break;
   default: return 0;
   }
   vt->output->updateCursor(vt->output);
   return 0;
 }
 static void sgr_handler(struct vt *vt, int param) {
-  uint32_t colortb[] = {
-    rgb(0 ,0, 0), rgb(255, 0, 0), rgb(0, 255, 0), rgb(255, 255, 0),
-    rgb(0, 0, 255), rgb(255, 0, 255), rgb(0, 255, 255), rgb(255, 255, 255),
-  };
   switch (param) {
   case 0:
     vt->attrs &= ~(ATTR_BOLD | ATTR_UNDERLINE | ATTR_REVERSE);
     vt->fg = options.fg;
     vt->bg = options.bg;
+    // printf("vt reset......\r\n");
     break;
   case 1: vt->attrs |= ATTR_BOLD; break;
   case 4: vt->attrs |= ATTR_UNDERLINE; break;
@@ -202,11 +215,12 @@ static void sgr_handler(struct vt *vt, int param) {
     break;
   default:
     if (param >= 30 && param <= 37)
-      vt->fg = colortb[param - 30];
+      vt->fg = param - 30; //colortb[vt->attrs & ATTR_BOLD][param - 30];
     else if (param >= 40 && param <= 47)
-      vt->bg = colortb[param - 40];
+      vt->bg = param - 40; //colortb[vt->attrs & ATTR_BOLD][param - 40];
+    break;
   }
-  printf("vt: %x %x %x %d\n", vt->fg, vt->bg, vt->attrs, param);
+  // printf("vt: %x %x %x %d\n", vt->fg, vt->bg, vt->attrs, param);
 }
 static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
   rune c = t->code;
@@ -261,34 +275,46 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       vt->c.y = vt->params[0] - 1;
       vt->c.x = vt->params[1] - 1;
       vt->output->updateCursor(vt->output);
+      break;
     }
     case 'J': { // ED
-      SETDEFAULT(vt->params[0], 1);
       switch (vt->params[0]) {
+        case 0:
+          vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1); break;
         case 1:
           vt->output->clear(vt->output, 0, 0, vt->c.y, vt->c.x); break;
         case 2:
+        case 3: // ??? in tty, `clear` generate 3 ?
           vt->output->clear(vt->output, 0, 0, -1, -1); break;
       }
+      break;
     }
     case 'K': { // EL
-      SETDEFAULT(vt->params[0], 1);
       switch (vt->params[0]) {
+        case 0:
+          vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1); break;
         case 1:
           vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, vt->c.x); break;
         case 2:
           vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, -1); break;
       }
+      break;
     }
     case 'd': { // VPA
       SETDEFAULT(vt->params[0], 1);
       vt->c.y = vt->params[0] - 1;
       vt->output->updateCursor(vt->output);
+      break;
     }
+    case 's':
+      vt->saved_c = vt->c; break;
+    case 'u':
+      vt->c = vt->saved_c; break;
     case '`':  {  // HPA
       SETDEFAULT(vt->params[0], 1);
       vt->c.x = vt->params[0] - 1;
       vt->output->updateCursor(vt->output);
+      break;
     }
     case 'f': { // HVP
       SETDEFAULT(vt->params[0], 1);
@@ -296,10 +322,14 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       vt->c.y = vt->params[0] - 1;
       vt->c.x = vt->params[1] - 1;
       vt->output->updateCursor(vt->output);
+      break;
     }
     case 'm': {  // SGR
-      for (int i = 0; i < vt->param_num; i++)
+      SETDEFAULT(vt->num_params, 1);
+      // printf("csi:sgr:params: %d %d %d %d\r\n", vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
+      for (int i = 0; i < vt->num_params; i++)
         sgr_handler(vt, vt->params[i]);
+      break;
       // printf("SGR: fg: %x, bg: %x, params: %d %d %d %d\n", vt->fg, vt->bg, vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
     }
   }
@@ -337,32 +367,39 @@ static uint8_t action_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
         break;
 
     case VTPAC_COLLECT:
-      if(vt->intermediate_char_num + 1 >= 3)
+      if(vt->num_intermediate_chars + 1 >= 3)
           vt->collect_ignored = 1;
       else
-          vt->intermediate_chars[vt->intermediate_char_num++] = t->code;
+          vt->intermediate_chars[vt->num_intermediate_chars++] = t->code;
       break;
 
     case VTPAC_PARAM: {
-      if (vt->param_num >= 16) break;
-
       /* process the param character */
-      if(c == ';' || vt->param_num == 0)
-        vt->params[vt->param_num++] = 0;
+      if(c == ';') {
+          vt->num_params += 1;
+          vt->params[vt->num_params-1] = 0;
+      } else {
+          /* the character is a digit */
+          int current_param;
 
-      if (c == ';') break;
+          if(vt->num_params == 0) {
+              vt->num_params = 1;
+              vt->params[0]  = 0;
+          }
 
-      /* the character is a digit */
-      int cpi = vt->param_num - 1;
-      vt->params[cpi] *= 10;
-      vt->params[cpi] += (c - '0');
-      printf("vt_param: %d\n", vt->params[cpi]);
+          current_param = vt->num_params - 1;
+          vt->params[current_param] *= 10;
+          vt->params[current_param] += (c - '0');
+      }
+
       break;
     }
 
     case VTPAC_CLEAR:
+      // printf("vtpac-clear:-----\r\n");
+      memset(vt->params, 0, 16 * 4);
       vt->intermediate_chars[0] = '\0';
-      vt->param_num             = 0;
+      vt->num_params            = 0;
       vt->collect_ignored       = 0;
       break;
   }
@@ -577,7 +614,8 @@ static int vt_parse_c(struct vt *vt, struct text *t) {
   if (!sa) sa = state_dispatch(vt, t, vt->state);
   state = STATE(sa); action = ACTION(sa);
 
-  printf("vtp:%c:%x %s %s\n", t->code, t->code, vtpac_tb[action], vtpst_tb[state]);
+  // printf("vtp:%c:%x %s %s\n", t->code, t->code, vtpac_tb[action], vtpst_tb[state]);
+  // printf("%c", t->code);
 
   if (!state)
     return action_dispatch(vt, t, action);
@@ -608,25 +646,103 @@ static int vt_parse_c(struct vt *vt, struct text *t) {
   return result;
 }
 int vt_parse_fp(struct vt *vt, int inputfp, struct text *t) {
-  t->fg = options.fg; t->bg = options.bg;
-  if ((t->code = u_getc(inputfp))) {
+  int r = 0; char c[5] = { 0 };
+  // t->fg = options.fg; t->bg = options.bg;
+  if ((r = u_getc(inputfp, c))) {
+    t->code = u_rune(c, r);
     vt_parse_c(vt, t); return 1;
   }
   return 0;
 }
 
 
-void vt_init(struct vt *vt, int backend) {
-  vt->parseInput = vt_parse_fp;
+void vt_destroy(struct vt *vt) {
+  vt->output->destroy(vt->output);
+}
+
+
+void vt_run(struct vt *vt) {
+  // struct termios tios;
+  // tcgetattr(vt->amaster, &tios);
+  //
+  // tios.c_lflag &= ~(ECHO);
+  /* input modes - clear indicated ones giving: no break, no CR to NL,
+     no parity check, no strip char, no start/stop output (sic) control */
+  // tios.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+
+  /* output modes - clear giving: no post processing such as NL to CR+NL */
+  // tios.c_oflag &= ~(OPOST);
+
+  /* local modes - clear giving: echoing off, canonical off (no erase with
+     backspace, ^U,...),  no extended functions, no signal chars (^Z,^C) */
+  // tios.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
+
+  // tios.c_cc[VMIN] = 0; tios.c_cc[VTIME] = 0;
+  //
+  // if (tcsetattr(vt->amaster, TCSAFLUSH, &tios) < 0) fatal("terminal set raw mode failed.\n");
+  // tcgetattr(vt->stdin, &tios);
+  // tios.c_cc[VMIN] = 0; tios.c_cc[VTIME] = 0;
+  // tcsetattr(vt->stdin, TCSAFLUSH, &tios);
+
+  struct pollfd pfds[2] = { { .fd = vt->stdin, .events = POLLIN }, { .fd = vt->amaster, .events = POLLIN } };
+  struct text t = { 0 };
+  int32_t r = 0;
+
+  while (1) {
+    char input = 0, output = 0; int e = 0;
+
+    r = poll(pfds, 2, -1);
+
+    if (r < 0 && errno != EINTR) break;
+    if (pfds[1].revents & (POLLHUP | POLLERR | POLLNVAL)) break;
+
+    if (pfds[1].revents & POLLIN) {
+      // read(pfds[1].fd, &output, 1);
+      // printf("%c", output);
+      vt_parse_fp(vt, pfds[1].fd, &t);
+    }
+
+    if (pfds[0].revents & POLLIN) {
+      read(pfds[0].fd, &input, 1);
+      // char c[5] = { 0 };
+      //
+      // if (!(r = u_getc(pfds[0].fd, c))) break;
+      // if (r == 1 && keymap[(uint8_t)c[0]]) c[0] = keymap[(uint8_t)c[0]];
+      //
+      // t.code = u_rune(c, r); t.fg = options.fg; t.bg = options.bg;
+      // // printf("rune: %s %x -- %d\r\n", c, t.code, r);
+      //
+      // vt_parse_c(vt, &t);
+      // write(pfds[1].fd, c, r);
+      write(pfds[1].fd, &input, 1);
+    }
+  }
+}
+
+
+void vt_init(struct vt *vt, int backend, int amaster) {
+  // vt->parseInput = vt_parse_fp;
+  // vt->parseChar = vt_parse_c;
+  vt->run = vt_run;
+  vt->destroy = vt_destroy;
+
   vt->output = outputs[backend];
   vt->output->init(vt->output, &vt->c);
+
+  options.vt = vt;
+  options.output = vt->output;
+
+  struct winsize w = { vt->output->rows, vt->output->cols, 0, 0 };
+  ioctl(amaster, TIOCSWINSZ, &w);
 
   vt->state = VTPST_GROUND;
   vt->fg = options.fg;
   vt->bg = options.bg;
-}
 
+  memset(vt->params, 0, 16 * 4);
 
-void vt_destroy(struct vt *vt) {
-  vt->output->destroy(vt->output);
+  vt->saved_line_characters_num = 0;
+
+  vt->stdin = STDIN_FILENO;
+  vt->amaster = amaster;
 }

@@ -1,5 +1,3 @@
-#include <stdio.h>
-#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 #include <sys/mman.h>
@@ -118,13 +116,16 @@ struct __drm* __drm_init() {
 
 void __drm_destroy(struct __drm *d) {
   if (!d) return;
+
   struct drm_mode_destroy_dumb dreq = { 0 };
+
   for (int i = 0; i < DRM_BUFFERS; i++) {
     dreq.handle = d->buf[i].handle;
     drmModeRmFB(d->fd, d->buf[i].id);
     munmap(d->buf[i].data, d->buf[i].size);
     drmIoctl(d->fd, DRM_IOCTL_MODE_DESTROY_DUMB, &dreq);
   }
+
   if (d->saved_crtc) {
     drmModeSetCrtc(d->fd, d->saved_crtc->crtc_id,
                    d->saved_crtc->buffer_id,
@@ -134,6 +135,7 @@ void __drm_destroy(struct __drm *d) {
     drmModeFreeCrtc(d->saved_crtc);
     d->saved_crtc = NULL;
   }
+
   close(d->fd);
   free(d);
 }
@@ -145,17 +147,21 @@ void drm_output_init(struct output *o, struct cursor *c) {
   o->c = c;
   o->w = d->mode.hdisplay;
   o->h = d->mode.vdisplay;
-  o->cols = o->w / options.font_size;
-  o->rows = o->h / options.font_size;
+  o->cols = o->w / options.font_width;
+  o->rows = o->h / options.font_height;
+
+  // int r = drmModeSetCursor(d->fd, d->crtc_id, 0, 40, 40);
+  // printf("set cursor: %d\r\n", r);
+  // o->updateCursor(o);
 }
 
 
 void drm_output_clear_line(struct output *o, int32_t r, int32_t sc, int32_t ec) {
   struct __drm *d = (struct __drm*)o->backend;
   if (ec < 0) ec = o->cols - 1;
-  int32_t es = (ec - sc + 1) * options.font_size;
-  for (int i = 0; i < options.font_size; i++)
-    memset(d->current_buf->data + o->w * (r * options.font_size + i) + sc * options.font_size, 0, es * 4);
+  int32_t es = (ec - sc + 1) * options.font_width;
+  for (int i = 0; i < options.font_height; i++)
+    memset(d->current_buf->data + o->w * (r * options.font_height + i) + sc * options.font_width, 0, es * 4);
 }
 void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int32_t ec) {
   if (sr < 0 || sc < 0) return;
@@ -176,18 +182,37 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
 
 
 void drm_output_scroll(struct output *o, int32_t offset) {
-  if (offset <= 0) return;
+  if (offset == 0) return;
   struct __drm *d = (struct __drm*)o->backend;
-  uint32_t *data = d->current_buf->data;
-  memmove(data, data + o->w * options.font_size, (o->h - options.font_size) * o->w * 4);
-  memset(data + o->w * (o->rows - 1) * options.font_size, 0, options.font_size * o->w * 4);
+  uint32_t *d1 = d->current_buf->data, *d2 = d1 + o->w * options.font_height;
+  if (offset > 0) {
+    memmove(d1, d2, (o->h - options.font_height) * o->w * 4);
+    memset(d1 + o->w * (o->rows - 1) * options.font_height, 0, options.font_height * o->w * 4);
+  } else {
+    memmove(d2, d1, (o->h - options.font_height) * o->w * 4);
+    memset(d1, 0, options.font_height * o->w * 4);
+  }
 }
 
 
 void drm_output_update_cursor(struct output *o) {
+  struct __drm *d = (struct __drm*)o->backend;
   struct cursor *c = o->c;
   if (c->x >= o->cols) c->x = 0, c->y++;
-  if (c->y >= o->rows) drm_output_scroll(o, 1), c->y = o->rows - 1;
+
+  // ATTENTION: Type Casting in C.
+  //   原则：1. 总是朝表示范围更大的那个类型转化。2.算数运算、二元逻辑运算符两边的类型要一致。
+  //   因此：当`c->y`类型为`int32_t`、`o->rows`类型为`uint32_t`时，`cc`会将`c->y`提升为`uint32_t`。
+  //   在这种条件下，当`c->y == -1`时，会发生什么情况呢？你猜？
+  if (c->y >= o->rows) {
+    drm_output_scroll(o, 1);
+    c->y = o->rows - 1;
+  } else if (c->y < 0) {
+    drm_output_scroll(o, c->y);
+    c->y = 0;
+  }
+  // int r = drmModeMoveCursor(d->fd, d->crtc_id, 12, 12);// c->x * options.font_width, c->y * options.font_height);
+  // printf("move cursor: %d %d %d %d\r\n", c->x, c->y, o->cols, o->rows);
 }
 
 
@@ -197,18 +222,26 @@ void drm_output_draw_text(struct output *o, struct text *t, int32_t row, int32_t
 
   struct __drm *d = (struct __drm*)o->backend;
 
+  // uint32_t w = 0, h = 0;
+  // uint32_t buffer[16384] = { 0 };
+  // u_render(t, buffer, &w, &h);
+
+  // if (w > options.font_width)
+  //   if (o->cols - col < 2) col = 0, row++;
+  // o->c->x = col; o->c->y = row;
+  // o->updateCursor(o);
+
   uint32_t fw = options.font_width, fh = options.font_height;
-  uint32_t sx = fw * col, sy = fh * row, w = 0, h = 0;
-  uint32_t buffer[16384] = { 0 };
+  uint32_t sx = fw * col, sy = fh * row;
 
-  u_render(t, buffer, &w, &h);
-  // printf("draw: %c %d %d %d %d\n", t->code, w, h, o->c->x, o->c->y);
+  int w = u_render(t, d->current_buf->data, sy, sx, -1);
+  // printf("draw: %c %d %d\r\n", t->code, o->c->x, o->c->y);
 
-  for (int r = 0; r < h; r++)
-    for (int c = 0; c < w; c++)
-      d->current_buf->data[(sy + r) * o->w + sx + c] = buffer[r * w + c];
+  // for (int r = 0; r < h; r++)
+  //   for (int c = 0; c < w; c++)
+  //     d->current_buf->data[(sy + r) * o->w + sx + c] = buffer[r * w + c];
 
-   o->c->x += (w > options.font_width ? 2 : 1);
+   o->c->x += w;
    o->updateCursor(o);
 }
 

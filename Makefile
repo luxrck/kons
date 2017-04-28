@@ -1,8 +1,8 @@
 CC		:= gcc -pipe
 OBJDUMP	:= objdump
 
-CFLAGS	:= -O2 -std=gnu99 -Wall -Wno-unused -Werror -g0 -Isrc
-LFLAGS	:= `pkg-config --libs --cflags fontconfig freetype2 libdrm` -lm -lutil
+CFLAGS	:= -std=gnu99 -Wall -Wno-unused -Werror -g0 -O2
+LFLAGS	:= `pkg-config --libs --cflags fontconfig freetype2 libdrm` -Isrc -lm -lutil
 
 SRC		:= src/charset.c	\
 				 src/options.c	\
