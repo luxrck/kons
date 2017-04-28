@@ -135,7 +135,7 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
     case '\r':  // 0x0d
       vt->c.x = 0;
       break;
-    case ' ':
+    case ' ':   // 0x20
       vt->c.x++;
       break;
     default:
@@ -157,7 +157,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
   case '#':
     switch (c) {
     case '8': {
-      struct text tt = { .code = 'E', .fg = 7, .bg = 0, .attrs = 0 };
+      struct text tt = { .code = 'E', .fg = options.fg, .bg = options.bg, .attrs = 0 };
       int32_t cx = vt->c.x, cy = vt->c.y;
       vt->c.x = vt->c.y = 0;
       for (int y = 0; y < vt->output->rows; y++)
@@ -278,9 +278,15 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       break;
     }
     case 'J': { // ED
+      // printf("clear screen: %d\r\n", vt->params[0]);
       switch (vt->params[0]) {
-        case 0:
-          vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1); break;
+        case 0: // clear region: from cursor to end of screen.
+          vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1);
+
+          // 操蛋的`man console_codes`的中文翻译！！！！！！
+          if (vt->c.y < vt->output->rows - 1)
+            vt->output->clear(vt->output, vt->c.y + 1, 0, -1, -1);
+          break;
         case 1:
           vt->output->clear(vt->output, 0, 0, vt->c.y, vt->c.x); break;
         case 2:
@@ -324,13 +330,36 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       vt->output->updateCursor(vt->output);
       break;
     }
+    case 'l':   // NOTE: Accually 'l'(RM) is not the same as 'h'(SM).
+    case 'h': { // SM
+      switch (vt->params[0]) {
+      case 1049:
+      case 1047:
+        vt->output->clear(vt->output, 0, 0, -1, -1);
+        if (vt->params[0] == 1047) break;
+      case 1048:
+        vt->saved_c = vt->c; break;
+      }
+    }
     case 'm': {  // SGR
+      // "\e[1mfuck\e[myou!"
       SETDEFAULT(vt->num_params, 1);
       // printf("csi:sgr:params: %d %d %d %d\r\n", vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
       for (int i = 0; i < vt->num_params; i++)
         sgr_handler(vt, vt->params[i]);
       break;
       // printf("SGR: fg: %x, bg: %x, params: %d %d %d %d\n", vt->fg, vt->bg, vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
+    }
+    case 'n': { // DSR
+      switch (vt->params[0]) {
+      case 5:
+        write(vt->amaster, "\e[0n", 4); break;
+      case 6: {
+        char buffer[32] = { 0 };
+        sprintf(buffer, "\e[%d;%dR", vt->c.y, vt->c.x);
+        write(vt->amaster, buffer, strlen(buffer));
+        }
+      }
     }
   }
   return 1;
@@ -662,27 +691,17 @@ void vt_destroy(struct vt *vt) {
 
 
 void vt_run(struct vt *vt) {
-  // struct termios tios;
-  // tcgetattr(vt->amaster, &tios);
-  //
-  // tios.c_lflag &= ~(ECHO);
-  /* input modes - clear indicated ones giving: no break, no CR to NL,
-     no parity check, no strip char, no start/stop output (sic) control */
-  // tios.c_iflag &= ~(BRKINT | ICRNL | INPCK | ISTRIP | IXON);
+  struct termios tios;
 
-  /* output modes - clear giving: no post processing such as NL to CR+NL */
-  // tios.c_oflag &= ~(OPOST);
+  tcgetattr(vt->stdin, &tios);
+  tios.c_lflag &= ~(ICANON | ISIG);
+  tios.c_iflag |= IUTF8;
+  tios.c_cc[VEOF] = 0;
+  if (tcsetattr(vt->stdin, TCSAFLUSH, &tios) < 0) fatal("terminal set raw mode failed.\n");
 
-  /* local modes - clear giving: echoing off, canonical off (no erase with
-     backspace, ^U,...),  no extended functions, no signal chars (^Z,^C) */
-  // tios.c_lflag &= ~(ECHO | ICANON | IEXTEN | ISIG);
-
-  // tios.c_cc[VMIN] = 0; tios.c_cc[VTIME] = 0;
-  //
-  // if (tcsetattr(vt->amaster, TCSAFLUSH, &tios) < 0) fatal("terminal set raw mode failed.\n");
-  // tcgetattr(vt->stdin, &tios);
-  // tios.c_cc[VMIN] = 0; tios.c_cc[VTIME] = 0;
-  // tcsetattr(vt->stdin, TCSAFLUSH, &tios);
+  tcgetattr(vt->amaster, &tios);
+  tios.c_iflag |= IUTF8 | IXON;
+  if (tcsetattr(vt->amaster, TCSAFLUSH, &tios) < 0) fatal("terminal set raw mode failed.\n");
 
   struct pollfd pfds[2] = { { .fd = vt->stdin, .events = POLLIN }, { .fd = vt->amaster, .events = POLLIN } };
   struct text t = { 0 };

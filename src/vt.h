@@ -63,6 +63,7 @@ struct text {
 
 struct cursor {
   int32_t x, y, mode;
+  int8_t enabled;
 };
 
 
