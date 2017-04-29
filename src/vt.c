@@ -106,46 +106,49 @@ typedef int (*vtpac_handler_t) (struct vt *vt, struct text *t, vtpac_t action);
  */
 static int vtpac_handle_print(struct vt *vt, struct text *t, vtpac_t action) {
   t->fg = vt->fg; t->bg = vt->bg; t->attrs = vt->attrs;
-  vt->output->drawText(vt->output, t, -1, -1);
+  vt->output->drawText(vt->output, t);
   return 1;
 }
+
 static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
   rune c = t->code;
+  int32_t x = vt->c.x, y = vt->c.y;
   switch (c) {
-    case '\b':  // 0x08
-      if (vt->c.x) {
-        vt->c.x--;
-        vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, vt->c.x);
-      }
+    case '\a':  // 0x07 BEL
+      return 1;
+    case '\b':  // 0x08 BS
+      if (vt->c.x) x--;
       break;
     case '\t':  // 0x09
-      vt->c.x = ((vt->c.x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
-      if (vt->c.x >= vt->cols) vt->c.x = vt->cols - 1;
+      x = ((x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
+      if (x >= vt->cols) x = vt->cols - 1;
       break;
     // case '\r':
     case '\n':  // 0x0a
       // printf("vtpac_handle_execute: %x\n", c);
-      vt->c.x = 0;
-      vt->c.y++;
+      x = 0;
+      y++;
       break;
     case '\v':  // 0x0b
     case '\f':  // 0x0c
-      vt->c.y++;
+      y++;
       break;
     case '\r':  // 0x0d
-      vt->c.x = 0;
+      x = 0;
       break;
     case ' ':   // 0x20
-      vt->c.x++;
+      x++;
       break;
     default:
       return 0;
   }
-  vt->output->updateCursor(vt->output);
+  vt->output->updateCursor(vt->output, y, x);
   return 1;
 }
+
 static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
   rune c = t->code;
+  int32_t x = vt->c.x, y = vt->c.y;
 
   switch (vt->intermediate_chars[0]) {
   case '(':
@@ -162,7 +165,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       vt->c.x = vt->c.y = 0;
       for (int y = 0; y < vt->output->rows; y++)
         for (int x = 0; x < vt->output->cols; x++)
-          vt->output->drawText(vt->output, &tt, -1, -1);
+          vt->output->drawText(vt->output, &tt);
       vt->c.x = cx; vt->c.y = cy;
       break;
       }
@@ -173,20 +176,21 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
   switch (c) {
   case 'c':
     vt->output->clear(vt->output, 0, 0, -1, -1);
-    vt->c.x = 0; vt->c.y = 0;
+    x = 0; y = 0;
     break;
   case 'D':
-    vt->c.y++; break;
+    y++; break;
   case 'E':
-    vt->c.x = 0; vt->c.y++;
+    x = 0; y++;
     break;
   case 'M':
-    vt->c.y--; break;
+    y--; break;
   default: return 0;
   }
-  vt->output->updateCursor(vt->output);
+  vt->output->updateCursor(vt->output, y, x);
   return 0;
 }
+
 static void sgr_handler(struct vt *vt, int param) {
   switch (param) {
   case 0:
@@ -222,59 +226,53 @@ static void sgr_handler(struct vt *vt, int param) {
   }
   // printf("vt: %x %x %x %d\n", vt->fg, vt->bg, vt->attrs, param);
 }
+
 static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
   rune c = t->code;
+  int32_t x = vt->c.x, y = vt->c.y;
   switch (c) {
     case 'A': { // CUU
       SETDEFAULT(vt->params[0], 1);
-      vt->c.y -= vt->params[0];
-      vt->output->updateCursor(vt->output);
+      y -= vt->params[0];
       break;
     }
     case 'B': { // CUD
       SETDEFAULT(vt->params[0], 1);
-      vt->c.y += vt->params[0];
-      vt->output->updateCursor(vt->output);
+      y += vt->params[0];
       break;
     }
     case 'C': { // CUF
       SETDEFAULT(vt->params[0], 1);
-      vt->c.x += vt->params[0];
-      vt->output->updateCursor(vt->output);
+      x += vt->params[0];
       break;
     }
     case 'D': { // CUB
       SETDEFAULT(vt->params[0], 1);
-      vt->c.x -= vt->params[0];
-      vt->output->updateCursor(vt->output);
+      x -= vt->params[0];
       break;
     }
     case 'E': { // CNL
       SETDEFAULT(vt->params[0], 1);
-      vt->c.y += vt->params[0];
-      vt->c.x = 0;
-      vt->output->updateCursor(vt->output);
+      y += vt->params[0];
+      x = 0;
       break;
     }
     case 'F': { // CPL
       SETDEFAULT(vt->params[0], 1);
-      vt->c.y -= vt->params[0];
-      vt->c.x = 0;
-      vt->output->updateCursor(vt->output);
+      y -= vt->params[0];
+      x = 0;
       break;
     }
     case 'G': { // CHA
       SETDEFAULT(vt->params[0], 0);
-      vt->c.x = vt->params[0];
-      vt->output->updateCursor(vt->output);
+      x = vt->params[0];
       break;
     }
     case 'H': { // CUP
       SETDEFAULT(vt->params[0], 1);
       SETDEFAULT(vt->params[1], 1);
-      vt->c.y = vt->params[0] - 1;
-      vt->c.x = vt->params[1] - 1;
-      vt->output->updateCursor(vt->output);
+      y = vt->params[0] - 1;
+      x = vt->params[1] - 1;
       break;
     }
     case 'J': { // ED
@@ -282,7 +280,6 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       switch (vt->params[0]) {
         case 0: // clear region: from cursor to end of screen.
           vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1);
-
           // 操蛋的`man console_codes`的中文翻译！！！！！！
           if (vt->c.y < vt->output->rows - 1)
             vt->output->clear(vt->output, vt->c.y + 1, 0, -1, -1);
@@ -293,7 +290,7 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
         case 3: // ??? in tty, `clear` generate 3 ?
           vt->output->clear(vt->output, 0, 0, -1, -1); break;
       }
-      break;
+      return 1;
     }
     case 'K': { // EL
       switch (vt->params[0]) {
@@ -304,30 +301,28 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
         case 2:
           vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, -1); break;
       }
-      break;
+      return 1;
     }
     case 'd': { // VPA
       SETDEFAULT(vt->params[0], 1);
-      vt->c.y = vt->params[0] - 1;
-      vt->output->updateCursor(vt->output);
+      y = vt->params[0] - 1;
       break;
     }
     case 's':
       vt->saved_c = vt->c; break;
     case 'u':
-      vt->c = vt->saved_c; break;
+      x = vt->saved_c.x; y = vt->saved_c.y;
+      break;
     case '`':  {  // HPA
       SETDEFAULT(vt->params[0], 1);
-      vt->c.x = vt->params[0] - 1;
-      vt->output->updateCursor(vt->output);
+      x = vt->params[0] - 1;
       break;
     }
     case 'f': { // HVP
       SETDEFAULT(vt->params[0], 1);
       SETDEFAULT(vt->params[1], 1);
-      vt->c.y = vt->params[0] - 1;
-      vt->c.x = vt->params[1] - 1;
-      vt->output->updateCursor(vt->output);
+      y = vt->params[0] - 1;
+      x = vt->params[1] - 1;
       break;
     }
     case 'l':   // NOTE: Accually 'l'(RM) is not the same as 'h'(SM).
@@ -340,6 +335,7 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       case 1048:
         vt->saved_c = vt->c; break;
       }
+      return 1;
     }
     case 'm': {  // SGR
       // "\e[1mfuck\e[myou!"
@@ -347,7 +343,7 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       // printf("csi:sgr:params: %d %d %d %d\r\n", vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
       for (int i = 0; i < vt->num_params; i++)
         sgr_handler(vt, vt->params[i]);
-      break;
+      return 1;
       // printf("SGR: fg: %x, bg: %x, params: %d %d %d %d\n", vt->fg, vt->bg, vt->params[0], vt->params[1], vt->params[2], vt->params[3]);
     }
     case 'n': { // DSR
@@ -360,8 +356,10 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
         write(vt->amaster, buffer, strlen(buffer));
         }
       }
+      return 1;
     }
   }
+  vt->output->updateCursor(vt->output, y, x);
   return 1;
 }
 
@@ -747,6 +745,8 @@ void vt_init(struct vt *vt, int backend, int amaster) {
 
   vt->output = outputs[backend];
   vt->output->init(vt->output, &vt->c);
+
+  cursor_init(&vt->c, options.font_width, options.font_height);
 
   options.vt = vt;
   options.output = vt->output;

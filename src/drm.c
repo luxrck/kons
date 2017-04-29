@@ -170,6 +170,12 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
   if (sr > er) return;
   if (sr == er && sc > ec) return;
 
+  struct cursor *c = o->c;
+  struct __drm *d = (struct __drm*)o->backend;
+
+  if ((c->y >= sr && c->y <= er) || (c->x >= sc && c->x <= ec))
+    if (c->dirty) c->xor(c, d->current_buf->data, -1, -1 -1, -1);
+
   if (sr == er) {
     drm_output_clear_line(o, sr, sc, ec);
   } else {
@@ -178,6 +184,9 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
       drm_output_clear_line(o, r, 0, -1);
     drm_output_clear_line(o, er, 0, ec);
   }
+
+  // restore
+  if (!c->dirty) c->xor(c, d->current_buf->data, -1, -1 -1, -1);
 }
 
 
@@ -195,9 +204,19 @@ void drm_output_scroll(struct output *o, int32_t offset) {
 }
 
 
-void drm_output_update_cursor(struct output *o) {
+void drm_output_update_cursor(struct output *o, int32_t y, int32_t x) {
   struct __drm *d = (struct __drm*)o->backend;
   struct cursor *c = o->c;
+
+  if (o->c->y == y && o->c->x == x) return;
+
+  // clear old cursor.
+  if (o->c->dirty) {
+    // printf("clear old cursor: %d %d\r\n", o->c->y, o->c->x);
+    o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
+  }
+  // printf("-----\r\n");
+  o->c->y = y; o->c->x = x;
   if (c->x >= o->cols) c->x = 0, c->y++;
 
   // ATTENTION: Type Casting in C.
@@ -211,38 +230,19 @@ void drm_output_update_cursor(struct output *o) {
     drm_output_scroll(o, c->y);
     c->y = 0;
   }
+
+  // printf("update new cursor: %d %d\r\n", o->c->y, o->c->x);
+  o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
   // int r = drmModeMoveCursor(d->fd, d->crtc_id, 12, 12);// c->x * options.font_width, c->y * options.font_height);
   // printf("move cursor: %d %d %d %d\r\n", c->x, c->y, o->cols, o->rows);
 }
 
 
-void drm_output_draw_text(struct output *o, struct text *t, int32_t row, int32_t col) {
-  if (row < 0) row = o->c->y;
-  if (col < 0) col = o->c->x;
-
+void drm_output_draw_text(struct output *o, struct text *t) {
   struct __drm *d = (struct __drm*)o->backend;
-
-  // uint32_t w = 0, h = 0;
-  // uint32_t buffer[16384] = { 0 };
-  // u_render(t, buffer, &w, &h);
-
-  // if (w > options.font_width)
-  //   if (o->cols - col < 2) col = 0, row++;
-  // o->c->x = col; o->c->y = row;
-  // o->updateCursor(o);
-
-  uint32_t fw = options.font_width, fh = options.font_height;
-  uint32_t sx = fw * col, sy = fh * row;
-
-  int w = u_render(t, d->current_buf->data, sy, sx, -1);
-  // printf("draw: %c %d %d\r\n", t->code, o->c->x, o->c->y);
-
-  // for (int r = 0; r < h; r++)
-  //   for (int c = 0; c < w; c++)
-  //     d->current_buf->data[(sy + r) * o->w + sx + c] = buffer[r * w + c];
-
-   o->c->x += w;
-   o->updateCursor(o);
+  if (o->c->dirty)
+    o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
+  u_render(t, d->current_buf->data, -1);
 }
 
 

@@ -1,17 +1,18 @@
-CC		:= gcc -pipe
+CC	:= gcc -pipe
 OBJDUMP	:= objdump
 
 CFLAGS	:= -std=gnu99 -Wall -Wno-unused -Werror -g0 -O2
 LFLAGS	:= `pkg-config --libs --cflags fontconfig freetype2 libdrm` -Isrc -lm -lutil
 
-SRC		:= src/charset.c	\
-				 src/options.c	\
-				 src/font.c			\
-				 src/drm.c			\
-				 src/vt.c				\
-				 src/main.c
+SRC	:= src/charset.c	\
+	src/options.c		\
+	src/cursor.c		\
+	src/font.c		\
+	src/drm.c		\
+	src/vt.c		\
+	src/main.c
 
-OBJ		:= $(patsubst %.c, %.o, $(SRC))
+OBJ	:= $(patsubst %.c, %.o, $(SRC))
 
 %.o: %.c
 	$(CC) $(LFLAGS) $(CFLAGS) -c -o $@ $<

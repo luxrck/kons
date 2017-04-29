@@ -7,21 +7,25 @@
 void font_init() {
   FcConfig* config = FcInitLoadConfigAndFonts();
 
-  FcPattern *pattern = FcNameParse((const FcChar8 *)(options.font));
+  FcPattern *pattern = FcNameParse((const FcChar8 *)(options.font_family));
   FcConfigSubstitute(config, pattern, FcMatchPattern);
   FcDefaultSubstitute(pattern);
 
   FcResult result = FcResultNoMatch; FcPattern* founded = FcFontMatch(config, pattern, &result);
 
   FcChar8 *foundedfile = NULL;
-  if (FcPatternGetString(founded, FC_FILE, 0, &foundedfile) != FcResultMatch) exit(-1);
+  if (FcPatternGetString(founded, FC_FILE, 0, &foundedfile) != FcResultMatch)
+    fatal("Font '%s' search failed.\n", options.font_family);
+
+  int faceindex = 0;
+  FcPatternGetInteger(founded, "index", 0, &faceindex);
 
   FT_Init_FreeType(&options.library);
   FT_New_Face(options.library,
               (char*)foundedfile,
-              1,
+              faceindex,
               &options.face);
-  FT_Set_Pixel_Sizes(options.face, options.font_height, options.font_height);
+  FT_Set_Pixel_Sizes(options.face, 0, options.font_height);
 
   FcPatternDestroy(pattern);
   FcPatternDestroy(founded);
@@ -69,7 +73,7 @@ int u_getc(int fp, char *buf) {
 }
 
 
-int u_render(struct text *t, uint32_t *buffer, int32_t by, int32_t bx, int32_t buffer_width) {
+int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
   FT_Select_Charmap(options.face, FT_ENCODING_UNICODE);
   rune c = FT_Get_Char_Index(options.face, t->code);
   FT_Load_Glyph(options.face, c, FT_LOAD_TARGET_NORMAL);
@@ -78,21 +82,29 @@ int u_render(struct text *t, uint32_t *buffer, int32_t by, int32_t bx, int32_t b
   FT_GlyphSlot slot = options.face->glyph;
   FT_Bitmap *bitmap = &(slot->bitmap);
 
-  int32_t w = t->code > 0x7f ? options.font_height : options.font_width;
+  struct output *o = options.output;
+  if (buffer_width < 0) buffer_width = o->w;
+  int32_t w = (options.font_height - bitmap->width <= 2) ? options.font_height : options.font_width;
   int32_t h = options.font_height;
-
-  if (buffer_width < 0) buffer_width = options.output->w;
-
   uint32_t tfg = t->fg, tbg = t->bg;
+  int32_t x = o->c->x, y = o->c->y;
+  if (w == h && o->c->x == o->cols - 1) x++;
+
+  // update cursor before rendering.
+  o->updateCursor(o, y, x);
+
+  int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
 
   if (t->attrs & ATTR_BOLD) tfg += 8;
   tfg = colortb[tfg], tbg = colortb[tbg];
-  if (t->attrs & ATTR_REVERSE) tfg = ~tfg, tbg = ~tbg;
+  if (t->attrs & ATTR_REVERSE) {
+    tfg += tbg, tbg = tfg - tbg, tfg = tfg - tbg;
+  }
 
-  int32_t x = 0,
-          y = options.font_height - options.font_height / 5 - 1;  // origin
+  int32_t ox = 0,                                              // origin.x
+          oy = options.font_height - options.font_height / 5;  // origin.y
           //  y = (y < slot->bitmap_top) ? slot->bitmap_top : y;
-  int32_t sx= (slot->bitmap_left < 0 ? -slot->bitmap_left : 0), sy = y - slot->bitmap_top, // (y < slot->bitmap_top ? 0 : y - slot->bitmap_top),
+  int32_t sx= slot->bitmap_left, sy = oy - slot->bitmap_top,
           ex= sx + bitmap->width, ey = sy + bitmap->rows;
 
   // printf("---:%c %d %d %d %d - %d %d - %d - %d %d\n",t->code, sx, ex, sy, ey, bitmap->width, bitmap->rows, slot->bitmap_top, x, y);
@@ -106,26 +118,20 @@ int u_render(struct text *t, uint32_t *buffer, int32_t by, int32_t bx, int32_t b
       //     2. the buffer is 32-bit size pixel use format argb, which layout on memory is: [b][g][r][a]
       // So we just cast 8-bit bitmap cell data to 32-bit buffer cell data, which makes it blue!!!
       // buffer[r * bitmap->width + c] = (bitmap->buffer[r * bitmap->width + c]);
-      uint32_t fg = tfg, bg = tbg, index = (by + r) * buffer_width + c + bx;
+      uint32_t fg = tfg, bg = tbg, index = (cy + r) * buffer_width + c + cx;
 
       buffer[index] = bg;
 
       if (!(r < sy || r >= ey || c < sx || c >= ex)) {
-        // buffer[(by + r) * buffer_width + c + bx] = bg;
-      // } else {
         uint8_t g = bitmap->buffer[(r - sy) * bitmap->width + c - sx];
         if (!g) continue;
-        // if (!g) {
-          // buffer[(by + r) * buffer_width + c + bx] = bg;
-          // continue;
-        // }
 
-        float raito = g / 255.0;
+        if (t->attrs & ATTR_REVERSE) g = ~g;
+
         uint8_t *colors = (uint8_t*)&fg;
-
-        colors[0] = (uint8_t)(colors[0] * raito);
-        colors[1] = (uint8_t)(colors[1] * raito);
-        colors[2] = (uint8_t)(colors[2] * raito);
+        colors[0] = (uint16_t)(colors[0] + g) / 2;
+        colors[1] = (uint16_t)(colors[1] + g) / 2;
+        colors[2] = (uint16_t)(colors[2] + g) / 2;
 
         buffer[index] = fg;
       }
@@ -133,10 +139,12 @@ int u_render(struct text *t, uint32_t *buffer, int32_t by, int32_t bx, int32_t b
 
   if (t->attrs & ATTR_UNDERLINE) {
     for (int c = 0; c < w; c++)
-      buffer[(by + h - 2) * buffer_width + c + bx] = tfg;
+      buffer[(cy + h - 2) * buffer_width + c + cx] = tfg;
   }
-  // if (bw) *bw = w; // bitmap->width;
-  // if (bh) *bh = h; // bitmap->rows;
+
+  x = o->c->x + (w / options.font_width);
+  // no need to update cursor now, because the rendered text is already overwrite cursor.
+  o->updateCursor(o, o->c->y, x);
 
   return w / options.font_width;
 }

@@ -47,6 +47,8 @@ int main(int argc, char *argv[]) {
     vt_init(&vt, OUTPUT_BACKEND_DRM, amaster);
 
     vt.run(&vt);
+		// vt.output->updateCursor(vt.output, 2, 2);
+		// sleep(5);
 
     font_destroy();
     vt_destroy(&vt);
