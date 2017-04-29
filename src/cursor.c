@@ -15,12 +15,12 @@ void cursor_init(struct cursor *c, int32_t w, int32_t h) {
   memset(c->bitmap, 0xff, w * h * 4);
 
   c->init = cursor_init;
-  c->xor =  cursor_xor;
+  c->toggle =  cursor_toggle;
   c->destroy = cursor_destroy;
 }
 
 
-void cursor_xor(struct cursor *cc, uint32_t *buffer, int32_t y, int32_t x, int32_t buffer_width) {
+void cursor_toggle(struct cursor *cc, uint32_t *buffer, int32_t y, int32_t x, int32_t buffer_width) {
   if (buffer_width < 0) buffer_width = options.output->w;
   if (y < 0) y = cc->y;
   if (x < 0) x = cc->x;
@@ -32,12 +32,12 @@ void cursor_xor(struct cursor *cc, uint32_t *buffer, int32_t y, int32_t x, int32
 
 
 void cursor_clear(struct cursor *c, uint32_t *buffer) {
-  if (c->dirty) c->xor(c, buffer, -1, -1 ,-1);
+  if (c->dirty) c->toggle(c, buffer, -1, -1 ,-1);
 }
 
 
 void cursor_set(struct cursor *c, uint32_t *buffer) {
-  if (!c->dirty) c->xor(c, buffer, -1, -1, -1);
+  if (!c->dirty) c->toggle(c, buffer, -1, -1, -1);
 }
 
 

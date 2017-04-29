@@ -26,6 +26,7 @@ void font_init() {
               faceindex,
               &options.face);
   FT_Set_Pixel_Sizes(options.face, 0, options.font_height);
+  FT_Select_Charmap(options.face, FT_ENCODING_UNICODE);
 
   FcPatternDestroy(pattern);
   FcPatternDestroy(founded);
@@ -74,7 +75,6 @@ int u_getc(int fp, char *buf) {
 
 
 int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
-  FT_Select_Charmap(options.face, FT_ENCODING_UNICODE);
   rune c = FT_Get_Char_Index(options.face, t->code);
   FT_Load_Glyph(options.face, c, FT_LOAD_TARGET_NORMAL);
   FT_Render_Glyph(options.face->glyph, FT_RENDER_MODE_NORMAL);
@@ -83,15 +83,20 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
   FT_Bitmap *bitmap = &(slot->bitmap);
 
   struct output *o = options.output;
+
   if (buffer_width < 0) buffer_width = o->w;
+
   int32_t w = (options.font_height - bitmap->width <= 2) ? options.font_height : options.font_width;
   int32_t h = options.font_height;
   uint32_t tfg = t->fg, tbg = t->bg;
-  int32_t x = o->c->x, y = o->c->y;
-  if (w == h && o->c->x == o->cols - 1) x++;
 
   // update cursor before rendering.
-  o->updateCursor(o, y, x);
+  int32_t x = o->c->x, y = o->c->y;
+  if (w == h && o->c->x == o->cols - 1) {
+    x++; o->updateCursor(o, y, x, OUTPUT_CURSOR_NOREDRAW);
+  } else {
+    o->c->dirty = 0;
+  }
 
   int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
 
@@ -144,7 +149,7 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
 
   x = o->c->x + (w / options.font_width);
   // no need to update cursor now, because the rendered text is already overwrite cursor.
-  o->updateCursor(o, o->c->y, x);
+  o->updateCursor(o, o->c->y, x, OUTPUT_CURSOR_REDRAW);
 
   return w / options.font_width;
 }

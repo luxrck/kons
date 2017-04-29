@@ -142,7 +142,7 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
     default:
       return 0;
   }
-  vt->output->updateCursor(vt->output, y, x);
+  vt->output->updateCursor(vt->output, y, x, OUTPUT_CURSOR_REDRAW);
   return 1;
 }
 
@@ -187,7 +187,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
     y--; break;
   default: return 0;
   }
-  vt->output->updateCursor(vt->output, y, x);
+  vt->output->updateCursor(vt->output, y, x, OUTPUT_CURSOR_REDRAW);
   return 0;
 }
 
@@ -359,7 +359,7 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       return 1;
     }
   }
-  vt->output->updateCursor(vt->output, y, x);
+  vt->output->updateCursor(vt->output, y, x, OUTPUT_CURSOR_REDRAW);
   return 1;
 }
 

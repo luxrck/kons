@@ -1,7 +1,7 @@
 CC	:= gcc -pipe
 OBJDUMP	:= objdump
 
-CFLAGS	:= -std=gnu99 -Wall -Wno-unused -Werror -g0 -O2
+CFLAGS	:= -std=gnu99 -Wall -Wno-unused -Werror -g0 -O3 -march=native
 LFLAGS	:= `pkg-config --libs --cflags fontconfig freetype2 libdrm` -Isrc -lm -lutil
 
 SRC	:= src/charset.c	\

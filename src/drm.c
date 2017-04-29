@@ -74,6 +74,7 @@ static void __drm_init_buffer(struct __drm *d) {
     buf->data = (uint32_t*)mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, d->fd, mreq.offset);
 
     memset(buf->data, 0, buf->size);
+    // printf("buf: %p %x\n", buf->data, buf->size);
   }
 }
 void __drm_init_crtc(struct __drm *d) {
@@ -174,7 +175,7 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
   struct __drm *d = (struct __drm*)o->backend;
 
   if ((c->y >= sr && c->y <= er) || (c->x >= sc && c->x <= ec))
-    if (c->dirty) c->xor(c, d->current_buf->data, -1, -1 -1, -1);
+    if (c->dirty) c->toggle(c, d->current_buf->data, -1, -1 -1, -1);
 
   if (sr == er) {
     drm_output_clear_line(o, sr, sc, ec);
@@ -186,7 +187,7 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
   }
 
   // restore
-  if (!c->dirty) c->xor(c, d->current_buf->data, -1, -1 -1, -1);
+  if (!c->dirty) c->toggle(c, d->current_buf->data, -1, -1 -1, -1);
 }
 
 
@@ -204,7 +205,7 @@ void drm_output_scroll(struct output *o, int32_t offset) {
 }
 
 
-void drm_output_update_cursor(struct output *o, int32_t y, int32_t x) {
+void drm_output_update_cursor(struct output *o, int32_t y, int32_t x, int32_t redraw) {
   struct __drm *d = (struct __drm*)o->backend;
   struct cursor *c = o->c;
 
@@ -212,10 +213,9 @@ void drm_output_update_cursor(struct output *o, int32_t y, int32_t x) {
 
   // clear old cursor.
   if (o->c->dirty) {
-    // printf("clear old cursor: %d %d\r\n", o->c->y, o->c->x);
-    o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
+    o->c->toggle(o->c, d->current_buf->data, -1, -1, -1);
   }
-  // printf("-----\r\n");
+
   o->c->y = y; o->c->x = x;
   if (c->x >= o->cols) c->x = 0, c->y++;
 
@@ -231,17 +231,14 @@ void drm_output_update_cursor(struct output *o, int32_t y, int32_t x) {
     c->y = 0;
   }
 
-  // printf("update new cursor: %d %d\r\n", o->c->y, o->c->x);
-  o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
-  // int r = drmModeMoveCursor(d->fd, d->crtc_id, 12, 12);// c->x * options.font_width, c->y * options.font_height);
-  // printf("move cursor: %d %d %d %d\r\n", c->x, c->y, o->cols, o->rows);
+  if (redraw && !o->c->dirty) {
+    o->c->toggle(o->c, d->current_buf->data, -1, -1, -1);
+  }
 }
 
 
 void drm_output_draw_text(struct output *o, struct text *t) {
   struct __drm *d = (struct __drm*)o->backend;
-  if (o->c->dirty)
-    o->c->xor(o->c, d->current_buf->data, -1, -1, -1);
   u_render(t, d->current_buf->data, -1);
 }
 
