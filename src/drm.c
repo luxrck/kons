@@ -159,6 +159,10 @@ void drm_output_init(struct output *o, struct cursor *c) {
 
 void drm_output_clear_line(struct output *o, int32_t r, int32_t sc, int32_t ec) {
   struct __drm *d = (struct __drm*)o->backend;
+
+  if (sc < 0) sc = 0;
+  if (ec < 0 || ec >= o->cols) ec = o->cols - 1;
+
   int32_t es = (ec - sc + 1) * options.font_width;
   for (int i = 0; i < options.font_height; i++)
     memset(d->current_buf->data + o->w * (r * options.font_height + i) + sc * options.font_width, 0, es * 4);
@@ -166,18 +170,14 @@ void drm_output_clear_line(struct output *o, int32_t r, int32_t sc, int32_t ec) 
 void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int32_t ec) {
   if (sr < 0) sr = 0;
   if (sc < 0) sc = 0;
-  if (er < 0) er = o->rows - 1;
-  if (er >= o->cols) er = o->cols - 1;
-  if (ec < 0) ec = o->cols - 1;
-  if (ec >= o->cols) ec = o->cols - 1;
+  if (er < 0 || er >= o->cols) er = o->rows - 1;
+  if (ec < 0 || ec >= o->cols) ec = o->cols - 1;
+
   if (sr > er) return;
   if (sr == er && sc > ec) return;
 
   struct cursor *c = o->c;
   struct __drm *d = (struct __drm*)o->backend;
-
-  if ((c->y >= sr && c->y <= er) || (c->x >= sc && c->x <= ec))
-    if (c->dirty) c->toggle(c, d->current_buf->data, -1, -1 -1, -1);
 
   if (sr == er) {
     drm_output_clear_line(o, sr, sc, ec);
@@ -188,8 +188,8 @@ void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int3
     drm_output_clear_line(o, er, 0, ec);
   }
 
-  // restore
-  if (!c->dirty) c->toggle(c, d->current_buf->data, -1, -1 -1, -1);
+  // drop last cursor.
+  if (c->dirty) c->dirty = 0;
 }
 
 
@@ -222,9 +222,6 @@ void drm_output_update_cursor(struct output *o, int32_t y, int32_t x, int32_t re
   if (c->x >= o->cols) c->x = 0, c->y++;
 
   // ATTENTION: Type Casting in C.
-  //   原则：1. 总是朝表示范围更大的那个类型转化。2.算数运算、二元逻辑运算符两边的类型要一致。
-  //   因此：当`c->y`类型为`int32_t`、`o->rows`类型为`uint32_t`时，`cc`会将`c->y`提升为`uint32_t`。
-  //   在这种条件下，当`c->y == -1`时，会发生什么情况呢？你猜？
   if (c->y >= o->rows) {
     drm_output_scroll(o, 1);
     c->y = o->rows - 1;

@@ -277,19 +277,21 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       break;
     }
     case 'J': { // ED
-      // printf("clear screen: %d\r\n", vt->params[0]);
+      SETDEFAULT(vt->params[0], 0);
+      // printf("ED: %d\r\n", vt->params[0]);
       switch (vt->params[0]) {
         case 0: // clear region: from cursor to end of screen.
           vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1);
-          // 操蛋的`man console_codes`的中文翻译！！！！！！
           if (vt->c.y < vt->output->rows - 1)
             vt->output->clear(vt->output, vt->c.y + 1, 0, -1, -1);
           break;
         case 1:
-          vt->output->clear(vt->output, 0, 0, vt->c.y, vt->c.x); break;
+          vt->output->clear(vt->output, 0, 0, vt->c.y, vt->c.x);
+          break;
         case 2:
-        case 3: // ??? in tty, `clear` generate 3 ?
-          vt->output->clear(vt->output, 0, 0, -1, -1); break;
+        case 3:
+          vt->output->clear(vt->output, 0, 0, -1, -1);
+          break;
       }
       return 1;
     }
@@ -438,6 +440,7 @@ static uint8_t action_dispatch(struct vt *vt, struct text *t, vtpac_t action) {
       // printf("vtpac-clear:-----\r\n");
       memset(vt->params, 0, 16 * 4);
       vt->intermediate_chars[0] = '\0';
+      vt->num_intermediate_chars= 0;
       vt->num_params            = 0;
       vt->collect_ignored       = 0;
       break;
