@@ -159,15 +159,17 @@ void drm_output_init(struct output *o, struct cursor *c) {
 
 void drm_output_clear_line(struct output *o, int32_t r, int32_t sc, int32_t ec) {
   struct __drm *d = (struct __drm*)o->backend;
-  if (ec < 0) ec = o->cols - 1;
   int32_t es = (ec - sc + 1) * options.font_width;
   for (int i = 0; i < options.font_height; i++)
     memset(d->current_buf->data + o->w * (r * options.font_height + i) + sc * options.font_width, 0, es * 4);
 }
 void drm_output_clear(struct output *o, int32_t sr, int32_t sc, int32_t er, int32_t ec) {
-  if (sr < 0 || sc < 0) return;
+  if (sr < 0) sr = 0;
+  if (sc < 0) sc = 0;
   if (er < 0) er = o->rows - 1;
+  if (er >= o->cols) er = o->cols - 1;
   if (ec < 0) ec = o->cols - 1;
+  if (ec >= o->cols) ec = o->cols - 1;
   if (sr > er) return;
   if (sr == er && sc > ec) return;
 

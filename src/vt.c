@@ -241,6 +241,7 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       y += vt->params[0];
       break;
     }
+    case 'a':
     case 'C': { // CUF
       SETDEFAULT(vt->params[0], 1);
       x += vt->params[0];
@@ -302,6 +303,17 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
           vt->output->clear(vt->output, vt->c.y, 0, vt->c.y, -1); break;
       }
       return 1;
+    }
+    // case 'P': { // DCH
+    //   SETDEFAULT(vt->params[0], 1);
+    //   vt->output->clear(vt->output, vt->c.y, vt->c.x + 1, vt->c.y, vt->c.x + vt->params[0]);
+    //   break;
+    // }
+    case 'P':   // DCH  ??
+    case 'X': { // ECH
+      SETDEFAULT(vt->params[0], 1);
+      vt->output->clear(vt->output, vt->c.y, vt->c.x, vt->c.y, -1);
+      break;
     }
     case 'd': { // VPA
       SETDEFAULT(vt->params[0], 1);
