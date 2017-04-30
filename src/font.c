@@ -148,8 +148,8 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
   }
 
   x = o->c->x + (w / options.font_width);
-  // no need to update cursor now, because the rendered text is already overwrite cursor.
-  o->updateCursor(o, o->c->y, x, OUTPUT_CURSOR_REDRAW);
+  // Had to set this flag because of the performence issue...
+  o->updateCursor(o, o->c->y, x, OUTPUT_CURSOR_NOREDRAW);
 
   return w / options.font_width;
 }

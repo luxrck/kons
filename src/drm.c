@@ -18,7 +18,7 @@
 
 // buffer[0] & buffer[1] are for front & back drawing buffer.
 // buffer[2] is for background image (if exist).
-#define DRM_BUFFERS 3
+#define DRM_BUFFERS 1
 
 
 struct __buffer {

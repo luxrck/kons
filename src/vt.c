@@ -685,6 +685,7 @@ int vt_parse_fp(struct vt *vt, int inputfp, struct text *t) {
 
 void vt_destroy(struct vt *vt) {
   vt->output->destroy(vt->output);
+  vt->c.destroy(&vt->c);
 }
 
 
@@ -721,16 +722,6 @@ void vt_run(struct vt *vt) {
 
     if (pfds[0].revents & POLLIN) {
       read(pfds[0].fd, &input, 1);
-      // char c[5] = { 0 };
-      //
-      // if (!(r = u_getc(pfds[0].fd, c))) break;
-      // if (r == 1 && keymap[(uint8_t)c[0]]) c[0] = keymap[(uint8_t)c[0]];
-      //
-      // t.code = u_rune(c, r); t.fg = options.fg; t.bg = options.bg;
-      // // printf("rune: %s %x -- %d\r\n", c, t.code, r);
-      //
-      // vt_parse_c(vt, &t);
-      // write(pfds[1].fd, c, r);
       write(pfds[1].fd, &input, 1);
     }
   }
@@ -751,17 +742,18 @@ void vt_init(struct vt *vt, int backend, int amaster) {
   options.vt = vt;
   options.output = vt->output;
 
-  struct winsize w = { vt->output->rows, vt->output->cols, 0, 0 };
-  ioctl(amaster, TIOCSWINSZ, &w);
-
   vt->state = VTPST_GROUND;
+  vt->num_intermediate_chars = 0;
+  vt->collect_ignored = 0;
+  memset(vt->params, 0, 16 * 4);
+  vt->num_params = 0;
+  vt->attrs = 0;
   vt->fg = options.fg;
   vt->bg = options.bg;
 
-  memset(vt->params, 0, 16 * 4);
-
-  vt->saved_line_characters_num = 0;
-
   vt->stdin = STDIN_FILENO;
   vt->amaster = amaster;
+
+  struct winsize w = { vt->output->rows, vt->output->cols, 0, 0 };
+  ioctl(amaster, TIOCSWINSZ, &w);
 }

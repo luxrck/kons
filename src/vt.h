@@ -111,24 +111,22 @@ struct vt {
   int32_t cols, rows;
   uint32_t fg, bg;
 
-  int32_t saved_line_characters_num;
-
   int stdin;
   int amaster;
 
   struct cursor c;
   struct cursor saved_c;
-  struct text *textbuffer;
+  struct text **texts;
   struct output *output;
 
   // int (*parseInput)(struct vt *vt, int fp, struct text *t);
   // int (*parseChar)(struct vt *vt, struct text *t);
   void (*init)(struct vt *vt, int backend, int amaster);
+  void (*scroll)(struct vt *vt, int offset);
+  void (*resize)(struct vt *vt, int rows, int cols);
   void (*run)(struct vt *vt);
   void (*destroy)(struct vt *vt);
 };
-
-
 void vt_init(struct vt *vt, int backend, int amaster);
 void vt_destroy(struct vt *vt);
 
