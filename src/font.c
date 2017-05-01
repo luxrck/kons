@@ -3,6 +3,8 @@
 #include <unistd.h>
 #include <font.h>
 
+static struct cache cache;
+
 
 void font_init() {
   FcConfig* config = FcInitLoadConfigAndFonts();
@@ -30,6 +32,8 @@ void font_init() {
 
   FcPatternDestroy(pattern);
   FcPatternDestroy(founded);
+
+  cache_init(&cache, 8192);
 }
 
 
@@ -74,21 +78,59 @@ int u_getc(int fp, char *buf) {
 }
 
 
+struct glyph* u_glyph(struct text *t) {
+  struct glyph *glyph = cache_get(&cache, t->code);
+  // if (glyph)
+  // printf("find: %x %c %d %d\r\n", t->code, t->code, glyph->w, glyph->h);
+  if (!glyph) {
+    rune c = FT_Get_Char_Index(options.face, t->code);
+    FT_Load_Glyph(options.face, c, FT_LOAD_TARGET_NORMAL);
+    FT_Render_Glyph(options.face->glyph, FT_RENDER_MODE_NORMAL);
+
+    FT_GlyphSlot slot = options.face->glyph;
+    FT_Bitmap *bitmap = &(slot->bitmap);
+
+    int32_t w = (options.font_height - bitmap->width <= 2) ? options.font_height : options.font_width;
+    int32_t h = options.font_height;
+
+    glyph = calloc(1, sizeof(struct glyph));
+    glyph->w = w;
+    glyph->h = h;
+    glyph->data = calloc(1, w * h);
+
+    int32_t ox = 0,                                              // origin.x
+            oy = options.font_height - options.font_height / 5,  // origin.y
+            sx = slot->bitmap_left,
+            sy = oy - slot->bitmap_top;
+            sx = sx < 0 ? -sx : 0,
+            sy = sy < 0 ? -sy : 0;
+    int32_t ex = bitmap->width - sx - w,
+            ey = oy + bitmap->rows - slot->bitmap_top;
+            ex = ex < 0 ? bitmap->width : sx + w,
+            ey = ey > h ? bitmap->rows + h - ey : bitmap->rows;   // !!!!!!
+    int32_t bx = sx == 0 ? slot->bitmap_left : 0,
+            by = sy == 0 ? oy - slot->bitmap_top : 0;
+    for (int r = sy; r < ey; r++) {
+      for (int c = sx; c < ex; c++) {
+        uint8_t p = bitmap->buffer[r * bitmap->width + c];
+        if (!p) continue;
+        glyph->data[(by + r) * w + bx + c] = p;
+      }
+    }
+    cache_set(&cache, t->code, glyph);
+  }
+  return glyph;
+}
+
+
 int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
-  rune c = FT_Get_Char_Index(options.face, t->code);
-  FT_Load_Glyph(options.face, c, FT_LOAD_TARGET_NORMAL);
-  FT_Render_Glyph(options.face->glyph, FT_RENDER_MODE_NORMAL);
-
-  FT_GlyphSlot slot = options.face->glyph;
-  FT_Bitmap *bitmap = &(slot->bitmap);
-
+  struct glyph *glyph = u_glyph(t);
   struct output *o = options.output;
 
   if (buffer_width < 0) buffer_width = o->w;
 
-  int32_t w = (options.font_height - bitmap->width <= 2) ? options.font_height : options.font_width;
-  int32_t h = options.font_height;
-  uint32_t tfg = t->fg, tbg = t->bg;
+  int32_t w = glyph->w;
+  int32_t h = glyph->h;
 
   // update cursor before rendering.
   int32_t x = o->c->x, y = o->c->y;
@@ -98,49 +140,41 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
     o->c->dirty = 0;
   }
 
-  int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
-
+  uint32_t tfg = t->fg, tbg = t->bg;
   if (t->attrs & ATTR_BOLD) tfg += 8;
   tfg = colortb[tfg], tbg = colortb[tbg];
   if (t->attrs & ATTR_REVERSE) {
     tfg += tbg, tbg = tfg - tbg, tfg = tfg - tbg;
   }
 
-  int32_t ox = 0,                                              // origin.x
-          oy = options.font_height - options.font_height / 5;  // origin.y
-          //  y = (y < slot->bitmap_top) ? slot->bitmap_top : y;
-  int32_t sx= slot->bitmap_left, sy = oy - slot->bitmap_top,
-          ex= sx + bitmap->width, ey = sy + bitmap->rows;
+  int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
 
-  // printf("---:%c %d %d %d %d - %d %d - %d - %d %d\n",t->code, sx, ex, sy, ey, bitmap->width, bitmap->rows, slot->bitmap_top, x, y);
-
-  for (int r = 0; r < h; r++)
+  for (int r = 0; r < h; r++) {
     for (int c = 0; c < w; c++) {
-      // ATTENTION: In fact, we did not specify `FT_LOAD_COLOR`, so bitmap is accually a
-      // 256-level gray bitmap. But, when we draw it on screen, it shows blue color. why?
-      // Because:
-      //     1. the memory layout of bitmap cell is: [256-level gray data]
-      //     2. the buffer is 32-bit size pixel use format argb, which layout on memory is: [b][g][r][a]
-      // So we just cast 8-bit bitmap cell data to 32-bit buffer cell data, which makes it blue!!!
-      // buffer[r * bitmap->width + c] = (bitmap->buffer[r * bitmap->width + c]);
-      uint32_t fg = tfg, bg = tbg, index = (cy + r) * buffer_width + c + cx;
+      uint32_t index = (cy + r) * buffer_width + c + cx,
+               gindex= r * w + c;
 
-      buffer[index] = bg;
+      buffer[index] = tbg;
 
-      if (!(r < sy || r >= ey || c < sx || c >= ex)) {
-        uint8_t g = bitmap->buffer[(r - sy) * bitmap->width + c - sx];
-        if (!g) continue;
-
+      if (!glyph->data[gindex]) {
+        buffer[index] = tbg;
+      } else if (glyph->data[gindex] == 255) {
+        buffer[index] = tfg;
+      } else {
+        uint8_t g = glyph->data[gindex];
         if (t->attrs & ATTR_REVERSE) g = ~g;
 
+        uint32_t fg = tfg;
         uint8_t *colors = (uint8_t*)&fg;
-        colors[0] = (uint16_t)(colors[0] + g) / 2;
-        colors[1] = (uint16_t)(colors[1] + g) / 2;
-        colors[2] = (uint16_t)(colors[2] + g) / 2;
+
+        colors[0] = (uint16_t)(colors[0] + g) >> 1;
+        colors[1] = (uint16_t)(colors[1] + g) >> 1;
+        colors[2] = (uint16_t)(colors[2] + g) >> 1;
 
         buffer[index] = fg;
       }
     }
+  }
 
   if (t->attrs & ATTR_UNDERLINE) {
     for (int c = 0; c < w; c++)

@@ -2,11 +2,12 @@ CC	:= gcc -pipe
 OBJDUMP	:= objdump
 
 CFLAGS	:= -std=gnu99 -Wall -Wno-unused -Werror -g0 -O3 -march=native
-LFLAGS	:= `pkg-config --libs --cflags fontconfig freetype2 libdrm` -Isrc -lm -lutil
+LFLAGS	:= `pkg-config --libs --cflags glib-2.0 fontconfig freetype2 libdrm` -Isrc -lm -lutil
 
 SRC	:= src/charset.c	\
 	src/options.c		\
 	src/cursor.c		\
+	src/cache.c		\
 	src/font.c		\
 	src/drm.c		\
 	src/vt.c		\
@@ -26,4 +27,4 @@ all:
 	make kons
 
 clean:
-	rm -f src/*.o src/*.d src/*.gch
+	rm -f src/*.o src/*.d src/*.gch kons*

@@ -9,6 +9,7 @@
 
 #include <vt.h>
 #include <font.h>
+#include <time.h>
 
 
 #define STATE(sa) (sa >> 4)
@@ -160,6 +161,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
   case '#':
     switch (c) {
     case '8': {
+      // printf("start: %ld\n", time(NULL));
       struct text tt = { .code = 'E', .fg = options.fg, .bg = options.bg, .attrs = 0 };
       int32_t cx = vt->c.x, cy = vt->c.y;
       vt->c.x = vt->c.y = 0;
@@ -170,6 +172,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       break;
       }
     }
+      // printf("start: %ld\n", time(NULL));
     break;
   }
 
