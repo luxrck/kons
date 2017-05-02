@@ -93,7 +93,7 @@ struct glyph* u_glyph(struct text *t) {
     int32_t w = (options.font_height - bitmap->width <= 2) ? options.font_height : options.font_width;
     int32_t h = options.font_height;
 
-    glyph = calloc(1, sizeof(struct glyph));
+    glyph = malloc(sizeof(struct glyph));
     glyph->w = w;
     glyph->h = h;
     glyph->data = calloc(1, w * h);
@@ -105,16 +105,18 @@ struct glyph* u_glyph(struct text *t) {
             sx = sx < 0 ? -sx : 0,
             sy = sy < 0 ? -sy : 0;
     int32_t ex = bitmap->width - sx - w,
-            ey = oy + bitmap->rows - slot->bitmap_top;
+            ey = oy + bitmap->rows - (slot->bitmap_top - sy);
             ex = ex < 0 ? bitmap->width : sx + w,
             ey = ey > h ? bitmap->rows + h - ey : bitmap->rows;   // !!!!!!
     int32_t bx = sx == 0 ? slot->bitmap_left : 0,
             by = sy == 0 ? oy - slot->bitmap_top : 0;
+    // printf("render: %x %d %d - %d %d - %d %d - %d %d - %d %d - %d %d\r\n",
+          // t->code, ox, oy, sx, sy, ex, ey, bx, by, w, h, slot->bitmap_left, slot->bitmap_top);
     for (int r = sy; r < ey; r++) {
       for (int c = sx; c < ex; c++) {
         uint8_t p = bitmap->buffer[r * bitmap->width + c];
         if (!p) continue;
-        glyph->data[(by + r) * w + bx + c] = p;
+        glyph->data[(by + r - sy) * w + bx + c - sx] = p;
       }
     }
     cache_set(&cache, t->code, glyph);
@@ -140,7 +142,7 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
     o->c->dirty = 0;
   }
 
-  uint32_t tfg = t->fg, tbg = t->bg;
+  uint_fast32_t tfg = t->fg, tbg = t->bg;
   if (t->attrs & ATTR_BOLD) tfg += 8;
   tfg = colortb[tfg], tbg = colortb[tbg];
   if (t->attrs & ATTR_REVERSE) {
@@ -148,30 +150,55 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
   }
 
   int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
+  uint8_t *fgc = (uint8_t*)&tfg, *bgc = (uint8_t*)&tbg;
+  uint_fast32_t r, g, b;
+  for (int y = 0; y < h; y++) {
+    for (int x = 0; x < w; x++) {
+      uint32_t index = (cy + y) * buffer_width + cx + x,
+               gindex= y * w + x;
+      uint_fast32_t p= glyph->data[gindex];
 
-  for (int r = 0; r < h; r++) {
-    for (int c = 0; c < w; c++) {
-      uint32_t index = (cy + r) * buffer_width + c + cx,
-               gindex= r * w + c;
-
-      buffer[index] = tbg;
-
-      if (!glyph->data[gindex]) {
+      if (p == 0) {
         buffer[index] = tbg;
-      } else if (glyph->data[gindex] == 255) {
+      } else if (p == 255) {
         buffer[index] = tfg;
       } else {
-        uint8_t g = glyph->data[gindex];
-        if (t->attrs & ATTR_REVERSE) g = ~g;
+        // if (t->attrs & ATTR_REVERSE) p = ~p;
+        uint8_t *buffer_u8 = (uint8_t*)(buffer + index);
 
-        uint32_t fg = tfg;
-        uint8_t *colors = (uint8_t*)&fg;
+        // gitub.com:kmscon/src/uterm_drm2d_render.c
+        /* Division by 255 (t /= 255) is done with:
+				 *   t += 0x80
+				 *   t = (t + (t >> 8)) >> 8
+				 * This speeds up the computation by ~20% as the
+				 * division is not needed. */
+        b = fgc[0] * p + bgc[0] * (255 - p);
+        b+= 0x80;
+        b = (b + (b >> 8)) >> 8;
 
-        colors[0] = (uint16_t)(colors[0] + g) >> 1;
-        colors[1] = (uint16_t)(colors[1] + g) >> 1;
-        colors[2] = (uint16_t)(colors[2] + g) >> 1;
+        g = fgc[1] * p + bgc[1] * (255 - p);
+        g+= 0x80;
+        g = (g + (g >> 8)) >> 8;
 
-        buffer[index] = fg;
+        r = fgc[2] * p + bgc[2] * (255 - p);
+        r+= 0x80;
+        r = (r + (r >> 8)) >> 8;
+
+        buffer_u8[0] = b;
+        buffer_u8[1] = g;
+        buffer_u8[2] = r;
+        // buffer[index] = (r<< 16) | (g << 8) | b;
+
+        // uint32_t fg = tfg;
+        // uint8_t *colors = (uint8_t*)&fg;
+        // colors[0] = (uint16_t)(colors[0] + p) >> 1;
+        // colors[1] = (uint16_t)(colors[1] + p) >> 1;
+        // colors[2] = (uint16_t)(colors[2] + p) >> 1;
+        // buffer[index] = fg;
+
+        // buffer_u8[0] = (uint16_t)(fgc[0] + p) >> 1;
+        // buffer_u8[1] = (uint16_t)(fgc[1] + p) >> 1;
+        // buffer_u8[2] = (uint16_t)(fgc[2] + p) >> 1;
       }
     }
   }

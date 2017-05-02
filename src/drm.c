@@ -2,7 +2,7 @@
 #include <string.h>
 #include <sys/mman.h>
 #include <unistd.h>
-
+#include <errno.h>
 #include <sys/stat.h>
 #include <sys/ioctl.h>
 #include <fcntl.h>
@@ -74,7 +74,6 @@ static void __drm_init_buffer(struct __drm *d) {
     buf->data = (uint32_t*)mmap(0, buf->size, PROT_READ | PROT_WRITE, MAP_SHARED, d->fd, mreq.offset);
 
     memset(buf->data, 0, buf->size);
-    // printf("buf: %p %x\n", buf->data, buf->size);
   }
 }
 void __drm_init_crtc(struct __drm *d) {
@@ -84,7 +83,7 @@ void __drm_init_crtc(struct __drm *d) {
 struct __drm* __drm_init() {
   struct __drm *d = malloc(sizeof(struct __drm));
 
-  d->fd = open(DRM_CARD0, O_RDWR | O_CLOEXEC);
+  d->fd = open(DRM_CARD0, O_RDWR);
 
   drmModeRes *res = drmModeGetResources(d->fd);
 
@@ -111,12 +110,15 @@ struct __drm* __drm_init() {
   __drm_init_buffer(d);
   __drm_init_crtc(d);
 
+  // la la la
+  drmDropMaster(d->fd);
   return d;
 }
 
 
 void __drm_destroy(struct __drm *d) {
   if (!d) return;
+  drmSetMaster(d->fd);
 
   struct drm_mode_destroy_dumb dreq = { 0 };
 
@@ -220,6 +222,8 @@ void drm_output_update_cursor(struct output *o, int32_t y, int32_t x, int32_t re
 
   o->c->y = y; o->c->x = x;
   if (c->x >= o->cols) c->x = 0, c->y++;
+
+  // if (flags & OUTPUT_CURSOR_NOREDRAW) return;
 
   // ATTENTION: Type Casting in C.
   if (c->y >= o->rows) {

@@ -107,7 +107,9 @@ typedef int (*vtpac_handler_t) (struct vt *vt, struct text *t, vtpac_t action);
  */
 static int vtpac_handle_print(struct vt *vt, struct text *t, vtpac_t action) {
   t->fg = vt->fg; t->bg = vt->bg; t->attrs = vt->attrs;
+  // printf("cursor: %d %d\r\n", vt->c.y, vt->c.x);
   vt->output->drawText(vt->output, t);
+  // printf("cursor: %d %d\r\n", vt->c.y, vt->c.x);
   return 1;
 }
 
@@ -121,8 +123,9 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
       if (vt->c.x) x--;
       break;
     case '\t':  // 0x09
-      x = ((x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
-      if (x >= vt->cols) x = vt->cols - 1;
+      // x = ((x + 1) / TAB_WIDTH + 1) * TAB_WIDTH;
+      x += TAB_WIDTH;
+      // if (x >= vt->cols) x = vt->cols - 1;
       break;
     // case '\r':
     case '\n':  // 0x0a
@@ -136,9 +139,6 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
       break;
     case '\r':  // 0x0d
       x = 0;
-      break;
-    case ' ':   // 0x20
-      x++;
       break;
     default:
       return 0;
@@ -161,7 +161,6 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
   case '#':
     switch (c) {
     case '8': {
-      // printf("start: %ld\n", time(NULL));
       struct text tt = { .code = 'E', .fg = options.fg, .bg = options.bg, .attrs = 0 };
       int32_t cx = vt->c.x, cy = vt->c.y;
       vt->c.x = vt->c.y = 0;
@@ -172,7 +171,6 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       break;
       }
     }
-      // printf("start: %ld\n", time(NULL));
     break;
   }
 
@@ -234,6 +232,13 @@ static int vtpac_handle_csi_dispatch(struct vt *vt, struct text *t, vtpac_t acti
   rune c = t->code;
   int32_t x = vt->c.x, y = vt->c.y;
   switch (c) {
+    case '@': { // ICH
+      SETDEFAULT(vt->params[0], 1);
+      // struct text t = { .code = ' '};
+      // for (int i = 0; i < vt->params[0]; i++)
+      //   vt->output->drawText(vt->output, &t);
+      break;
+    }
     case 'A': { // CUU
       SETDEFAULT(vt->params[0], 1);
       y -= vt->params[0];
