@@ -34,7 +34,7 @@ uint32_t colortb[16] = {
 
 void options_default() {
   strcpy(options.font_family, "Noto Sans Mono CJK SC");
-  options.font_size = 12;
+  options.font_size = 16;
   options.fg = 7;
   options.bg = 0;
   options.tab_width = 4;

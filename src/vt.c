@@ -15,7 +15,6 @@
 #define STATE(sa) (sa >> 4)
 #define ACTION(sa) (sa & 15)
 #define STATEACTION(s, a) ((s << 4) | a)
-#define SETDEFAULT(a, b) (a) = (a) ? (a) : (b)
 
 
 static int TAB_WIDTH = 4;
@@ -108,7 +107,7 @@ typedef int (*vtpac_handler_t) (struct vt *vt, struct text *t, vtpac_t action);
 static int vtpac_handle_print(struct vt *vt, struct text *t, vtpac_t action) {
   t->fg = vt->fg; t->bg = vt->bg; t->attrs = vt->attrs;
   // printf("cursor: %d %d\r\n", vt->c.y, vt->c.x);
-  vt->output->drawText(vt->output, t);
+  vt->drawText(vt, t);
   // printf("cursor: %d %d\r\n", vt->c.y, vt->c.x);
   return 1;
 }
@@ -130,6 +129,7 @@ static int vtpac_handle_execute(struct vt *vt, struct text *t, vtpac_t action) {
     // case '\r':
     case '\n':  // 0x0a
       // printf("vtpac_handle_execute: %x\n", c);
+      // (vt->texts + vt->c.y * vt->cols + vt->c.x)->code= '\n';
       x = 0;
       y++;
       break;
@@ -166,7 +166,7 @@ static int vtpac_handle_esc_dispatch(struct vt *vt, struct text *t, vtpac_t acti
       vt->c.x = vt->c.y = 0;
       for (int y = 0; y < vt->output->rows; y++)
         for (int x = 0; x < vt->output->cols; x++)
-          vt->output->drawText(vt->output, &tt);
+          vt->drawText(vt, &tt);
       vt->c.x = cx; vt->c.y = cy;
       break;
       }
@@ -712,6 +712,43 @@ void vt_destroy(struct vt *vt) {
 }
 
 
+void vt_scroll(struct vt *vt, int32_t offset) {
+  if (offset == 0) return;
+  struct text *d1 = vt->texts, *d2 = vt->texts + ABS(offset) * vt->cols;
+  if (offset > 0) {
+    memmove(d1, d2, (vt->rows - offset) * vt->cols * sizeof(struct text));
+    memset(vt->texts + (vt->rows-ABS(offset)) * vt->cols, 0, ABS(offset) * vt->cols * sizeof(struct text));
+  } else {
+    memmove(d2, d1, (vt->rows + offset) * vt->cols * sizeof(struct text));
+    memset(d1, 0, ABS(offset) * vt->cols * sizeof(struct text));
+  }
+}
+
+
+void vt_draw_text(struct vt *vt, struct text *t) {
+  struct cursor *c = &(vt->c);
+  struct output *o = vt->output;
+
+  *(vt->texts + c->y * vt->cols + c->x) = *t;
+  t = vt->texts + c->y * vt->cols + c->x;
+  struct glyph *g = u_glyph(t);
+
+  // update cursor before rendering.
+  int32_t x = o->c->x, y = o->c->y;
+  if (g->w == g->h && o->c->x == o->cols - 1) {
+    x++; o->updateCursor(o, y, x, OUTPUT_CURSOR_NOREDRAW);
+  } else {
+    o->c->dirty = 0;
+  }
+
+  vt->output->drawText(vt->output, t, vt->c.y, vt->c.x);
+
+  x = o->c->x + (g->w / options.font_width);
+  // Had to set this flag because of the performence issue...
+  o->updateCursor(o, o->c->y, x, OUTPUT_CURSOR_NOREDRAW);
+}
+
+
 void vt_run(struct vt *vt) {
   struct termios tios;
 
@@ -756,9 +793,13 @@ void vt_init(struct vt *vt, int backend, int amaster) {
   // vt->parseChar = vt_parse_c;
   vt->run = vt_run;
   vt->destroy = vt_destroy;
+  vt->drawText = vt_draw_text;
+  vt->scroll = vt_scroll;
 
   vt->output = outputs[backend];
   vt->output->init(vt->output, &vt->c);
+  vt->rows = vt->output->rows;
+  vt->cols = vt->output->cols;
 
   cursor_init(&vt->c, options.font_width, options.font_height);
 
@@ -773,6 +814,7 @@ void vt_init(struct vt *vt, int backend, int amaster) {
   vt->attrs = 0;
   vt->fg = options.fg;
   vt->bg = options.bg;
+  vt->texts = calloc(vt->cols * vt->rows, sizeof(struct text));
 
   vt->stdin = STDIN_FILENO;
   vt->amaster = amaster;

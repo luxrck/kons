@@ -6,11 +6,6 @@
 #include <vt.h>
 
 
-struct glyph {
-  int32_t w, h;
-  uint8_t *data;
-};
-
 struct cache {
   GHashTable *dict;
   GList *lru;
@@ -28,6 +23,7 @@ void cache_set(struct cache *cache, uint32_t key, void *data);
 
 int u_getc(int fp, char *buf);
 rune u_rune(char *s, int size);
-int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width);
+struct glyph* u_glyph(struct text *t);
+int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width, int32_t y, int32_t x);
 
 #endif /* !__FONT_H__ */

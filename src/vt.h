@@ -12,6 +12,9 @@
 #define argb(a, r, g, b) ((a<<24) | (r<<16) | (g<<8) | b)
 #define rgb(r, g, b) argb(0, r, g, b)
 
+#define SETDEFAULT(a, b) (a) = (a) ? (a) : (b)
+// #define ABS(a) (a > 0 ? a : -a)
+
 
 typedef uint32_t rune;
 
@@ -53,9 +56,16 @@ void options_default();
 void options_init(char *path);
 
 
+struct glyph {
+  int32_t w, h;
+  uint8_t *data;
+};
+
+
 struct text {
   uint32_t bg, fg, attrs;
   rune code;
+  struct glyph *data;
 };
 
 
@@ -87,7 +97,7 @@ struct output {
   void (*clear)(struct output *o, int32_t fr, int32_t fc, int32_t er, int32_t ec);
   void (*scroll)(struct output *o, int offset);
   void (*updateCursor)(struct output *o, int32_t y, int32_t x, int32_t redraw);
-  void (*drawText)(struct output *o, struct text *t);
+  void (*drawText)(struct output *o, struct text *t, int32_t y, int32_t x);
   void (*drawBitmap)(struct output *o, int32_t *bitmap, int32_t x, int32_t y,
                      int32_t w, int32_t h);
   void (*destroy)(struct output *o);
@@ -97,6 +107,7 @@ struct output {
 #define ATTR_BOLD       1
 #define ATTR_UNDERLINE  2
 #define ATTR_REVERSE    4
+#define ATTR_CURSOR     8
 struct vt {
   uint8_t state;
   uint8_t intermediate_chars[3];
@@ -114,9 +125,9 @@ struct vt {
   int stdin;
   int amaster;
 
-  struct cursor c;
-  struct cursor saved_c;
-  struct text **texts;
+  struct cursor c, saved_c;
+
+  struct text *texts;
   struct output *output;
 
   // int (*parseInput)(struct vt *vt, int fp, struct text *t);
@@ -124,6 +135,8 @@ struct vt {
   void (*init)(struct vt *vt, int backend, int amaster);
   void (*scroll)(struct vt *vt, int offset);
   void (*resize)(struct vt *vt, int rows, int cols);
+  void (*updateCursor)(struct vt *vt, int32_t y, int32_t x, int32_t redraw);
+  void (*drawText)(struct vt *vt, struct text *t);
   void (*run)(struct vt *vt);
   void (*destroy)(struct vt *vt);
 };

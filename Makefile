@@ -25,6 +25,8 @@ kons: $(OBJ)
 
 all:
 	make kons
+	sudo chown root:root kons
+	sudo chmod u+s kons
 
 clean:
 	rm -f src/*.o src/*.d src/*.gch kons*

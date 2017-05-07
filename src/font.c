@@ -121,26 +121,20 @@ struct glyph* u_glyph(struct text *t) {
     }
     cache_set(&cache, t->code, glyph);
   }
+  t->data = glyph;
   return glyph;
 }
 
 
-int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
-  struct glyph *glyph = u_glyph(t);
+int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width, int32_t cy, int32_t cx) {
+  // struct glyph *glyph = u_glyph(t);
+  struct glyph *glyph = t->data;
   struct output *o = options.output;
 
   if (buffer_width < 0) buffer_width = o->w;
 
   int32_t w = glyph->w;
   int32_t h = glyph->h;
-
-  // update cursor before rendering.
-  int32_t x = o->c->x, y = o->c->y;
-  if (w == h && o->c->x == o->cols - 1) {
-    x++; o->updateCursor(o, y, x, OUTPUT_CURSOR_NOREDRAW);
-  } else {
-    o->c->dirty = 0;
-  }
 
   uint_fast32_t tfg = t->fg, tbg = t->bg;
   if (t->attrs & ATTR_BOLD) tfg += 8;
@@ -149,7 +143,6 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
     tfg += tbg, tbg = tfg - tbg, tfg = tfg - tbg;
   }
 
-  int32_t cx = o->c->x * options.font_width, cy = o->c->y * options.font_height;
   uint8_t *fgc = (uint8_t*)&tfg, *bgc = (uint8_t*)&tbg;
   uint_fast32_t r, g, b;
   for (int y = 0; y < h; y++) {
@@ -207,10 +200,6 @@ int u_render(struct text *t, uint32_t *buffer, int32_t buffer_width) {
     for (int c = 0; c < w; c++)
       buffer[(cy + h - 2) * buffer_width + c + cx] = tfg;
   }
-
-  x = o->c->x + (w / options.font_width);
-  // Had to set this flag because of the performence issue...
-  o->updateCursor(o, o->c->y, x, OUTPUT_CURSOR_NOREDRAW);
 
   return w / options.font_width;
 }
